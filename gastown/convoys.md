@@ -43,6 +43,5 @@ Before dispatching from a convoy, confirm:
 
 1. The convoy theme is still relevant to current master.
 2. Each bead is non-duplicative.
-3. GPU slots are available.
+3. Validated comparable runner slots are available.
 4. The expected upside is worth the slot.
-

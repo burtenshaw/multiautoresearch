@@ -136,7 +136,7 @@ Treat `scheduler.max_polecats` as the GPU governor.
 
 Rules:
 
-- one usable H100 = one active experiment polecat
+- one validated comparable runner = one active experiment polecat
 - start with one planner and one polecat
 - add more polecats only after the planner is consistently preventing duplicates
 - do not launch idle workers just because the machine can host more terminals
@@ -151,8 +151,13 @@ More workers do not help if they burn the same hypothesis twice.
 nvidia-smi
 ```
 
-If you do not have an NVIDIA H100 available, stop. Local comparisons are not
-trustworthy otherwise.
+If `nvidia-smi` is missing, if the visible GPU is not an NVIDIA H100, or if the
+checked-in local benchmark path cannot run on that host, stop. Local
+comparisons are not trustworthy otherwise.
+
+This includes wrapper prerequisites. A shell that lacks basics such as
+`timeout`, CUDA wheels, or the checked-in benchmark path is not a comparable
+runner, even if it can host idle polecats.
 
 ### 2. Register or load credentials
 
@@ -258,9 +263,10 @@ Suggested loop:
 
 1. Fetch current master, recent commits, and any new diffs.
 2. Update the do-not-repeat ledger from regressions and duplicates.
-3. Pick a narrow convoy theme.
-4. Create one bead per hypothesis.
-5. Dispatch only up to real GPU capacity.
+3. Confirm that at least one validated comparable runner is currently available.
+4. Pick a narrow convoy theme.
+5. Create one bead per hypothesis only if a comparable runner exists, and name the target comparable runner in the bead.
+6. Dispatch only up to validated comparable-runner capacity.
 
 Use convoys for research campaigns, not random batches. Follow the naming rule
 from `autolab/convoys.md`:
@@ -278,12 +284,18 @@ Each experiment bead should include, at minimum:
 - one-sentence hypothesis
 - parent master hash
 - master `val_bpb` at dispatch time
+- intended comparable runner or capability proof
 - exact single variable being changed
 - expected upside
 - reason it is not a duplicate
 
 Use `autolab/templates/experiment-bead.md` and
 `autolab/templates/convoy-template.md` instead of inventing a free-form format.
+
+If no validated comparable runner is available, do not mint or sling the bead.
+Leave it unslung or blocked with an explicit note such as `waiting for
+comparable runner` until a trusted H100 host or proven comparable managed
+runner is available.
 
 For bead workflow:
 
@@ -311,9 +323,13 @@ Before editing:
 
 1. Run `gt prime` if role context is missing.
 2. Read the assigned bead.
-3. Re-fetch current master.
-4. Confirm the hypothesis is still fresh.
-5. Confirm the allowed edit scope is still `train.py` only.
+3. Verify that your current execution path is actually comparable:
+   - local path: `nvidia-smi` exists, shows an NVIDIA H100, and `./run-local.sh` prerequisites are present
+   - managed path: the bead explicitly targets a runner that has already produced trusted comparable results
+4. If the capability gate fails, stop before editing and record `waiting for comparable runner` instead of trying the run locally.
+5. Re-fetch current master.
+6. Confirm the hypothesis is still fresh.
+7. Confirm the allowed edit scope is still `train.py` only.
 
 Execution contract:
 

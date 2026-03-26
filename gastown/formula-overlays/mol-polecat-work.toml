@@ -5,12 +5,16 @@ description = """
 Initialize your experiment assignment.
 
 1. Prime your environment and read the assigned bead.
-2. Identify the current master hash and current master metric from the task context.
-3. Confirm the hypothesis is still fresh and not already invalidated by newer swarm results.
-4. Confirm the allowed edit scope is `train.py` only unless the bead explicitly says otherwise.
-5. State the one change you are going to test before editing.
+2. Verify that your assigned execution path can produce a comparable benchmark result:
+   - local hosts must expose `nvidia-smi`, report an NVIDIA H100, and have the checked-in benchmark wrapper prerequisites available
+   - managed runners are allowed only if the bead explicitly targets a runner that has already produced trusted comparable results
+3. If that capability gate fails, stop before editing, persist the missing capability on the bead, and escalate for replanning instead of attempting an impossible local run.
+4. Identify the current master hash and current master metric from the task context.
+5. Confirm the hypothesis is still fresh and not already invalidated by newer swarm results.
+6. Confirm the allowed edit scope is `train.py` only unless the bead explicitly says otherwise.
+7. State the one change you are going to test before editing.
 
-Exit criteria: you know the exact single hypothesis you are testing, the current master context, and the allowed edit scope."""
+Exit criteria: you know whether the host is comparable, the exact single hypothesis you are testing, the current master context, and the allowed edit scope."""
 
 [[step-overrides]]
 step_id = "implement"

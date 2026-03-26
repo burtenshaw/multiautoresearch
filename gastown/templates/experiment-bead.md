@@ -9,6 +9,12 @@
 - Parent master hash: `<hash>`
 - Master val_bpb at dispatch: `<value>`
 
+## Comparable Runner
+
+- Dispatch target: `<validated H100 host or managed runner>`
+- Capability proof: `<how you know this runner is comparable>`
+- Fallback if unavailable: `wait for comparable runner; do not re-sling locally`
+
 ## Single Variable
 
 <What exactly is changing?>
@@ -31,4 +37,3 @@
 - Submitted: `yes|no`
 - Interpretation: `<one or two sentences>`
 - Failure mode, if any: `<brief note>`
-
