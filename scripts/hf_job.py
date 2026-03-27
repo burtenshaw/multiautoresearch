@@ -25,6 +25,7 @@ AUTOLAB_HOME = "/autolab-home"
 AUTOLAB_CACHE_MOUNT = f"{AUTOLAB_HOME}/.cache/autoresearch"
 BEAD_PATTERN = re.compile(r"\bau-[a-z0-9]+\b")
 TERMINAL_JOB_STAGES = {"COMPLETED", "CANCELED", "CANCELLED", "FAILED", "TIMEOUT", "ERROR"}
+DEFAULT_NAMESPACE = os.environ.get("AUTOLAB_HF_NAMESPACE")
 SUMMARY_KEYS = {
     "val_bpb",
     "training_seconds",
@@ -969,7 +970,7 @@ def build_parser() -> argparse.ArgumentParser:
     launch_parser.add_argument("--bucket", help="HF bucket to mount at ~/.cache/autoresearch")
     launch_parser.add_argument("--flavor", help="override HF Jobs flavor")
     launch_parser.add_argument("--timeout", help="override HF Jobs timeout")
-    launch_parser.add_argument("--namespace", help="run the job under this namespace")
+    launch_parser.add_argument("--namespace", default=DEFAULT_NAMESPACE, help="run the job under this namespace")
     launch_parser.add_argument("--env", action="append", default=[], help="extra HF Jobs --env entries")
     launch_parser.add_argument("--label", action="append", default=[], help="extra HF Jobs --label entries")
     launch_parser.add_argument("--skip-bucket-create", action="store_true", help="do not create the bucket before launch")
@@ -982,7 +983,7 @@ def build_parser() -> argparse.ArgumentParser:
     detach_group.add_argument("--no-detach", dest="detach", action="store_false", help="stream logs during submission")
 
     preflight_parser = subparsers.add_parser("preflight", help="audit the current workspace before launching an experiment")
-    preflight_parser.add_argument("--namespace", help="namespace that owns the jobs")
+    preflight_parser.add_argument("--namespace", default=DEFAULT_NAMESPACE, help="namespace that owns the jobs")
     preflight_parser.add_argument("--json", action="store_true", help="emit the preflight report as JSON")
 
     logs_parser = subparsers.add_parser("logs", help="stream or fetch HF Jobs logs")
@@ -990,11 +991,11 @@ def build_parser() -> argparse.ArgumentParser:
     logs_parser.add_argument("--follow", action="store_true", help="stream until completion")
     logs_parser.add_argument("--tail", type=int, help="only fetch the last N lines")
     logs_parser.add_argument("--output", type=Path, help="write logs to this file while streaming")
-    logs_parser.add_argument("--namespace", help="namespace that owns the job")
+    logs_parser.add_argument("--namespace", default=DEFAULT_NAMESPACE, help="namespace that owns the job")
 
     inspect_parser = subparsers.add_parser("inspect", help="inspect HF Job status")
     inspect_parser.add_argument("job_id", nargs="?", help="HF job id; defaults to the last launched job")
-    inspect_parser.add_argument("--namespace", help="namespace that owns the job")
+    inspect_parser.add_argument("--namespace", default=DEFAULT_NAMESPACE, help="namespace that owns the job")
 
     return parser
 

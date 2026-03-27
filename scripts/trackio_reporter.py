@@ -35,6 +35,7 @@ SUMMARY_KEYS = {
 }
 TERMINAL_STAGES = {"COMPLETED", "CANCELED", "CANCELLED", "FAILED", "TIMEOUT", "ERROR"}
 DEFAULT_PROJECT = os.environ.get("AUTOLAB_TRACKIO_PROJECT", "autolab")
+DEFAULT_NAMESPACE = os.environ.get("AUTOLAB_HF_NAMESPACE")
 STEP_RE = re.compile(
     r"step\s+(?P<step>\d+)\s+\((?P<pct_done>[0-9.]+)%\)\s+\|\s+"
     r"loss:\s+(?P<loss>[0-9.]+)\s+\|\s+"
@@ -834,14 +835,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync_parser = subparsers.add_parser("sync", help="sync recent autolab HF Jobs into Trackio")
     sync_parser.add_argument("--project", default=DEFAULT_PROJECT, help="Trackio project name")
-    sync_parser.add_argument("--namespace", help="Hugging Face namespace that owns the jobs")
+    sync_parser.add_argument("--namespace", default=DEFAULT_NAMESPACE, help="Hugging Face namespace that owns the jobs")
     sync_parser.add_argument("--tail", type=int, default=5000, help="tail this many log lines per job")
     sync_parser.add_argument("--max-jobs", type=int, default=25, help="inspect at most this many recent jobs")
     sync_parser.add_argument("--watch", action="store_true", help="keep syncing on an interval")
     sync_parser.add_argument("--interval", type=int, default=300, help="watch interval in seconds")
 
     summary_parser = subparsers.add_parser("summary", help="print the current autolab HF Jobs report")
-    summary_parser.add_argument("--namespace", help="Hugging Face namespace that owns the jobs")
+    summary_parser.add_argument("--namespace", default=DEFAULT_NAMESPACE, help="Hugging Face namespace that owns the jobs")
     summary_parser.add_argument("--tail", type=int, default=5000, help="tail this many log lines per job")
     summary_parser.add_argument("--max-jobs", type=int, default=25, help="inspect at most this many recent jobs")
 
