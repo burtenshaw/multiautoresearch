@@ -7,6 +7,10 @@ The goal is not to maximize agent count. The goal is to maximize useful,
 non-duplicated experiments per H100-hour until you beat current master on
 `val_bpb`.
 
+If you are using Hugging Face Jobs, the exact accelerator flavor depends on
+what that account can actually launch. Set that explicitly in
+`AUTOLAB_HF_EXPERIMENT_FLAVOR` and treat cross-hardware comparisons carefully.
+
 ## What Autolab Rewards
 
 - One fixed 5-minute training budget on a single H100 GPU.
@@ -26,6 +30,7 @@ Autolab is mostly a coordination problem:
 Gas Town helps with exactly those problems:
 
 - `crew` or `mayor` plans the research program.
+- `crew/researcher` scouts papers and converts them into testable hypotheses.
 - `polecats` run one benchmark experiment each.
 - `beads` store hypotheses, results, and dead ends.
 - `convoys` group related experiment campaigns.
@@ -75,6 +80,25 @@ The planner owns strategy:
 The planner should not spend GPU time unless there is no idle worker and the
 next experiment is urgent.
 
+### Research Scout: `crew/researcher`
+
+Gas Town only has one built-in `crew` role, so the checked-in `crew.md`
+directive treats the workspace named `researcher` as a dedicated literature
+scout.
+
+Use it for:
+
+- Hugging Face paper search and reading
+- mapping papers to the current `train.py`
+- maintaining the live rig notebook at `~/gt/autolab/research/paper-ideas.md`
+- creating narrow `docs` or `question` beads for the planner
+
+Do not use it for:
+
+- dispatching polecats on its own
+- broad architecture rewrites
+- claiming wins without a benchmark
+
 ### Polecats
 
 Polecats execute one experiment cleanly:
@@ -101,7 +125,7 @@ it the default for this rig or town:
 
 ```bash
 gt config agent list
-gt config agent set codex-low "codex --thinking low"
+gt config agent set codex-low "codex"
 gt config default-agent codex-low
 ```
 
@@ -130,13 +154,63 @@ gt prime
 Only move to daemon-managed full stack mode after duplicate prevention and
 result persistence are working.
 
+Bring up the paper scout once the planner loop is stable:
+
+```bash
+cd ~/gt/autolab
+gt crew add researcher --rig autolab
+gt crew at researcher --agent codex
+```
+
+Inside the `researcher` session:
+
+```bash
+gt prime
+. ~/.autolab/credentials
+python3 scripts/refresh_master.py --fetch-dag
+hf papers search "selective attention transformer language model"
+hf papers read 2411.12892
+```
+
+The `researcher` worker should use the local `hf-cli` skill and available HF
+paper search tooling, then write distilled ideas to
+`~/gt/autolab/research/paper-ideas.md`.
+
+## Managed HF Jobs Path
+
+If your operator machine is not already a trusted local H100 host, use Hugging
+Face Jobs as the benchmark executor and keep the local machine as planner plus
+control plane only.
+
+One-time setup:
+
+```bash
+. ~/.autolab/credentials
+hf auth whoami
+hf buckets create "$AUTOLAB_HF_BUCKET" --private --exist-ok
+python3 scripts/hf_job.py launch --mode prepare
+```
+
+Per experiment:
+
+```bash
+python3 scripts/hf_job.py launch --mode experiment
+# note the job id from the JSON output, then:
+python3 scripts/hf_job.py logs <JOB_ID> --follow --output /tmp/autolab-run.log
+python3 scripts/parse_metric.py /tmp/autolab-run.log
+```
+
+This path mounts the shared HF bucket at the benchmark cache location, so
+`prepare.py` stays unchanged and the expensive tokenizer plus shard bootstrap is
+reused across jobs.
+
 ## Keep GPU Capacity Honest
 
-Treat `scheduler.max_polecats` as the GPU governor.
+Treat `scheduler.max_polecats` as the paid-job governor.
 
 Rules:
 
-- one validated comparable runner = one active experiment polecat
+- one paid benchmark slot = one active experiment polecat
 - start with one planner and one polecat
 - add more polecats only after the planner is consistently preventing duplicates
 - do not launch idle workers just because the machine can host more terminals
@@ -145,21 +219,10 @@ More workers do not help if they burn the same hypothesis twice.
 
 ## Autolab Setup
 
-### 1. Verify hardware
+### 1. Register or load credentials
 
-```bash
-nvidia-smi
-```
-
-If `nvidia-smi` is missing, if the visible GPU is not an NVIDIA H100, or if the
-checked-in local benchmark path cannot run on that host, stop. Local
-comparisons are not trustworthy otherwise.
-
-This includes wrapper prerequisites. A shell that lacks basics such as
-`timeout`, CUDA wheels, or the checked-in benchmark path is not a comparable
-runner, even if it can host idle polecats.
-
-### 2. Register or load credentials
+The checked-in default path uses Hugging Face Jobs. Local H100 runs remain an
+optional fallback only if the host is already a trusted comparable runner.
 
 If credentials already exist:
 
@@ -191,12 +254,20 @@ chmod 600 ~/.autolab/credentials
 If registration fails because the name is taken, pick a different nickname and
 retry.
 
-### 3. Assign GPUs intentionally
+### 2. Authenticate to Hugging Face Jobs
 
-Run `nvidia-smi`, pick a GPU index per worker, and never let two experiment
-polecats fight over the same H100.
+```bash
+hf auth whoami
+hf buckets create "$AUTOLAB_HF_BUCKET" --private --exist-ok
+```
 
-### 4. Prepare a benchmark workspace
+Bootstrap the shared cache once:
+
+```bash
+python3 scripts/hf_job.py launch --mode prepare
+```
+
+### 3. Prepare a benchmark workspace
 
 You can use the checked-in scaffold in `autolab/contributor/` or create a clean
 workspace elsewhere. Either way:

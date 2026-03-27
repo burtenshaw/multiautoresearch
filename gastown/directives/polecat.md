@@ -18,8 +18,8 @@ Your job is to execute one benchmark experiment cleanly and report the result.
 Your work is not done when code looks good.
 Your work is done when you have:
 
-1. Run the timed local experiment.
-2. Recorded `val_bpb`.
+1. Launched exactly one managed benchmark job for the experiment bead.
+2. Recorded the HF job id plus the resulting `val_bpb`.
 3. Written a short interpretation of the result.
 4. Submitted only if the result beats current master.
 
@@ -27,12 +27,14 @@ Your work is done when you have:
 
 After every run, persist:
 - parent master hash
-- local `val_bpb`
+- HF job id and flavor
+- observed `val_bpb`
 - hypothesis tested
 - whether the patch was submitted
 - one short note on what likely happened
 
-If the run regressed, persist the failure clearly so other workers do not repeat it.
+If the run regressed or failed before a metric appeared, persist the HF job id
+and failure clearly so other workers do not repeat it.
 
 ### Duplicate Avoidance
 
@@ -48,4 +50,3 @@ Do not:
 - run your own research program
 
 If you discover a promising adjacent idea, file it as follow-up research instead of adding it now.
-

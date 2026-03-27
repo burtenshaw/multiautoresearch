@@ -12,6 +12,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LIVE_DIR = ROOT / "research" / "live"
+DEFAULT_HTTP_TIMEOUT = float(os.environ.get("AUTOLAB_HTTP_TIMEOUT", "10"))
+DEFAULT_HTTP_RETRIES = int(os.environ.get("AUTOLAB_HTTP_RETRIES", "2"))
 
 
 def load_autolab_base() -> str:
@@ -29,12 +31,65 @@ def load_autolab_base() -> str:
     return base or "http://autoresearchhub.com"
 
 
-def fetch_json(url: str) -> dict | list:
+def fetch_json(
+    url: str,
+    *,
+    timeout: float = DEFAULT_HTTP_TIMEOUT,
+    retries: int = DEFAULT_HTTP_RETRIES,
+) -> dict | list:
+    last_error: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace").strip()
+            detail = f" HTTP {exc.code}"
+            if body:
+                detail += f": {body}"
+            raise SystemExit(f"failed to fetch {url}:{detail}") from exc
+        except (TimeoutError, OSError, urllib.error.URLError) as exc:
+            last_error = exc
+            if attempt < retries:
+                print(
+                    f"warning: fetch attempt {attempt}/{retries} failed for {url}: {exc}",
+                    file=sys.stderr,
+                )
+    raise SystemExit(f"failed to fetch {url}: {last_error}") from last_error
+
+
+def load_json(path: Path) -> dict | list | None:
+    if not path.exists():
+        return None
     try:
-        with urllib.request.urlopen(url, timeout=60) as response:
-            return json.load(response)
-    except urllib.error.URLError as exc:
-        raise SystemExit(f"failed to fetch {url}: {exc}") from exc
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
+
+
+def detail_hash(detail: object) -> str | None:
+    if not isinstance(detail, dict):
+        return None
+    commit = detail.get("commit")
+    if isinstance(commit, dict):
+        hash_value = commit.get("hash")
+        if isinstance(hash_value, str):
+            return hash_value
+    hash_value = detail.get("hash")
+    if isinstance(hash_value, str):
+        return hash_value
+    return None
+
+
+def load_cached_detail(master_hash: str) -> dict | None:
+    cached = load_json(LIVE_DIR / "master_detail.json")
+    if not isinstance(cached, dict):
+        return None
+    if detail_hash(cached) != master_hash:
+        return None
+    if not isinstance(cached.get("source"), str):
+        return None
+    return cached
 
 
 def write_json(path: Path, payload: dict | list) -> None:
@@ -76,7 +131,19 @@ def main() -> int:
     if not isinstance(master, dict) or "hash" not in master:
         raise SystemExit("master response was missing hash")
 
-    detail = fetch_json(f"{base}/api/git/commits/{master['hash']}")
+    detail_url = f"{base}/api/git/commits/{master['hash']}"
+    try:
+        detail = fetch_json(detail_url)
+    except SystemExit as exc:
+        cached_detail = load_cached_detail(master["hash"])
+        if cached_detail is None:
+            raise
+        print(
+            "warning: commit detail fetch failed; using cached "
+            f"{(LIVE_DIR / 'master_detail.json').relative_to(ROOT)} for {master['hash']}: {exc}",
+            file=sys.stderr,
+        )
+        detail = cached_detail
     if not isinstance(detail, dict) or "source" not in detail:
         raise SystemExit("commit detail response was missing source")
 

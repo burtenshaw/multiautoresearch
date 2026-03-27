@@ -34,6 +34,7 @@ PAIRS=(
   "$ROOT/gastown/convoys.md:$TARGET_ROOT/convoys.md"
   "$ROOT/gastown/day-1-checklist.md:$TARGET_ROOT/day-1-checklist.md"
   "$ROOT/docs/gastown-codex-guide.md:$TARGET_ROOT/instructions.md"
+  "$ROOT/research/paper-ideas.md:$TARGET_ROOT/research/paper-ideas.md"
 )
 
 ensure_target_dirs() {
@@ -41,6 +42,7 @@ ensure_target_dirs() {
     -- \
     "$TARGET_ROOT/directives" \
     "$TARGET_ROOT/formula-overlays" \
+    "$TARGET_ROOT/research" \
     "$TARGET_ROOT/templates"
 }
 

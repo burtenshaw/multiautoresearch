@@ -21,6 +21,8 @@ orchestration code in `autoresearch-gastown`. Keep live autolab work here.
   Read-only benchmark setup and evaluation logic.
 - `run-local.sh`
   Canonical timed local run wrapper.
+- `scripts/hf_job.py`
+  Render, launch, inspect, and stream Hugging Face Jobs for the benchmark rig.
 - `sitecustomize.py`
   Machine-local compatibility shim for local runs. Keep local hacks here, not in
   submitted diffs.
@@ -38,6 +40,7 @@ orchestration code in `autoresearch-gastown`. Keep live autolab work here.
   rig.
 - `research/`
   Seed snapshots, local notes, archived diffs, and git-tracked experiment memory.
+  This includes `research/paper-ideas.md` for literature-derived hypotheses.
 
 ## Quick Start
 
@@ -47,24 +50,37 @@ orchestration code in `autoresearch-gastown`. Keep live autolab work here.
 . ~/.autolab/credentials
 ```
 
-2. Refresh to current hub master:
+2. Authenticate to Hugging Face Jobs and create the shared cache bucket once:
+
+```bash
+hf auth whoami
+hf buckets create "$AUTOLAB_HF_BUCKET" --private --exist-ok
+python3 scripts/hf_job.py launch --mode prepare
+```
+
+3. Refresh to current hub master:
 
 ```bash
 python3 scripts/refresh_master.py --fetch-dag
 ```
 
-3. Run a local benchmark:
+4. Launch one managed benchmark job:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 ./run-local.sh /tmp/autolab-run.log
+python3 scripts/hf_job.py launch --mode experiment
+# note the job id from the JSON output, then:
+python3 scripts/hf_job.py logs <JOB_ID> --follow --output /tmp/autolab-run.log
 python3 scripts/parse_metric.py /tmp/autolab-run.log
 ```
 
-4. If the result beats current master, submit it:
+5. If the result beats current master, submit it:
 
 ```bash
 python3 scripts/submit_patch.py --comment "one-sentence hypothesis and result"
 ```
+
+`run-local.sh` remains available as a local-H100 fallback, but the checked-in
+rig defaults to Hugging Face Jobs.
 
 ## Gas Town Setup
 
@@ -79,7 +95,19 @@ gt rig add autolab <repo-url>
 That installs the checked-in planner and polecat directives plus the autolab
 formula overlay into the rig container where Gas Town expects them. Use
 `--check` to confirm the live rig still matches the checked-in assets, and rerun
-the install command if it reports drift.
+the install command if it reports drift. The install also copies
+`research/paper-ideas.md` into the live rig root so a dedicated `researcher`
+crew worker can maintain literature findings outside any one crew clone.
+
+To add a dedicated paper-scout worker:
+
+```bash
+gt crew add researcher --rig autolab
+```
+
+The live `crew` directive treats the workspace named `researcher` as a
+literature scout that searches Hugging Face papers and feeds the planner
+single-change Autolab hypotheses.
 
 ## Push Policy
 

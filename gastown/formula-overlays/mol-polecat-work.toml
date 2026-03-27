@@ -41,13 +41,20 @@ mode = "replace"
 description = """
 Run the benchmark experiment exactly as required by the rig.
 
+Preferred flow:
+- submit one Hugging Face Job with `python3 scripts/hf_job.py launch --mode experiment`
+- record the job id immediately
+- stream logs back with `python3 scripts/hf_job.py logs <JOB_ID> --follow --output /tmp/autolab-run.log`
+
 Record:
 - parent master hash
-- local `val_bpb`
+- HF job id and flavor
+- observed `val_bpb`
 - whether the run completed successfully
 - any obvious runtime or stability issues
 
-If the run does not produce a valid metric, treat it as a failed experiment and persist why."""
+If the run does not produce a valid metric, treat it as a failed experiment and
+persist the HF job id plus the failure reason."""
 
 [[step-overrides]]
 step_id = "submit"
