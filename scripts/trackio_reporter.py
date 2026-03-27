@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import hashlib
 import json
 import os
@@ -15,7 +16,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -55,10 +56,13 @@ def infer_rig_root() -> Path:
 
 
 RIG_ROOT = infer_rig_root()
+TOWN_ROOT = RIG_ROOT.parent
 GLOBAL_RUNTIME_DIR = RIG_ROOT / ".runtime"
 STATE_PATH = GLOBAL_RUNTIME_DIR / "trackio-reporter-state.json"
 SNAPSHOT_PATH = GLOBAL_RUNTIME_DIR / "trackio-latest.json"
 MARKDOWN_PATH = GLOBAL_RUNTIME_DIR / "trackio-report.md"
+JOBS_CACHE_PATH = GLOBAL_RUNTIME_DIR / "hf-jobs-cache.json"
+EVENTS_PATH = TOWN_ROOT / ".events.jsonl"
 
 
 def resolve_hf_cli() -> str:
@@ -178,6 +182,61 @@ def load_master_snapshot() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def load_jobs_cache() -> list[dict[str, Any]]:
+    if not JOBS_CACHE_PATH.exists():
+        return []
+    try:
+        payload = json.loads(JOBS_CACHE_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    return payload if isinstance(payload, list) else []
+
+
+def save_jobs_cache(jobs: list[dict[str, Any]]) -> None:
+    GLOBAL_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    JOBS_CACHE_PATH.write_text(json.dumps(jobs, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def load_recent_events(limit: int = 12, scan_lines: int = 4000, max_age_hours: int = 6) -> list[dict[str, Any]]:
+    if not EVENTS_PATH.exists():
+        return []
+    try:
+        lines = EVENTS_PATH.read_text(encoding="utf-8").splitlines()[-scan_lines:]
+    except OSError:
+        return []
+
+    interesting_types = {"nudge", "escalation_sent", "session_death"}
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+    events: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        ts = payload.get("ts")
+        if isinstance(ts, str):
+            try:
+                event_time = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            except ValueError:
+                event_time = None
+            if event_time is not None and event_time < cutoff:
+                continue
+        event_type = payload.get("type")
+        actor = payload.get("actor")
+        body = payload.get("payload")
+        if event_type not in interesting_types:
+            continue
+        if not (isinstance(actor, str) and actor.startswith("autolab/")):
+            target = body.get("target") if isinstance(body, dict) else None
+            rig = body.get("rig") if isinstance(body, dict) else None
+            if not (isinstance(target, str) and target.startswith("autolab/")) and rig != "autolab":
+                continue
+        events.append(payload)
+    return events[-limit:]
+
+
 def load_registry_entries() -> dict[str, dict[str, Any]]:
     entries: dict[str, dict[str, Any]] = {}
     candidates: list[Path] = []
@@ -204,6 +263,73 @@ def load_registry_entries() -> dict[str, dict[str, Any]]:
         if current is None or str(payload.get("launched_at", "")) >= str(current.get("launched_at", "")):
             entries[job_id] = payload
     return entries
+
+
+def row_mode(row: dict[str, Any]) -> str | None:
+    labels = row.get("labels")
+    if isinstance(labels, dict):
+        mode = labels.get("mode")
+        if isinstance(mode, str) and mode:
+            return mode
+    return None
+
+
+def build_anomalies(rows: list[dict[str, Any]], events: list[dict[str, Any]]) -> list[str]:
+    anomalies: list[str] = []
+    active_rows = [row for row in rows if row["stage"] not in TERMINAL_STAGES]
+
+    active_by_bead: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    active_by_hypothesis: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in active_rows:
+        bead_id = row.get("bead_id")
+        if isinstance(bead_id, str) and bead_id:
+            active_by_bead[bead_id].append(row)
+        hypothesis = row.get("hypothesis")
+        if isinstance(hypothesis, str) and hypothesis:
+            active_by_hypothesis[hypothesis].append(row)
+
+        mode = row_mode(row)
+        if mode == "prepare" and bead_id:
+            anomalies.append(f"prepare job launched from bead `{bead_id}`: `{row['job_id']}`")
+        bead_status = row.get("bead_status")
+        if isinstance(bead_status, str) and bead_status.lower() in {"closed", "blocked", "resolved"}:
+            anomalies.append(
+                f"bead `{bead_id or row['job_id']}` is `{bead_status}` but still has active job `{row['job_id']}`"
+            )
+
+    for bead_id, bead_rows in active_by_bead.items():
+        active_experiments = [row for row in bead_rows if row_mode(row) == "experiment"]
+        if len(active_experiments) > 1:
+            job_ids = ", ".join(str(row["job_id"]) for row in active_experiments)
+            anomalies.append(f"duplicate active experiments for bead `{bead_id}`: {job_ids}")
+
+    for hypothesis, hypothesis_rows in active_by_hypothesis.items():
+        unique_beads = {row.get("bead_id") for row in hypothesis_rows if row.get("bead_id")}
+        active_experiments = [row for row in hypothesis_rows if row_mode(row) == "experiment"]
+        if len(active_experiments) > 1 and len(unique_beads) > 1:
+            job_ids = ", ".join(str(row["job_id"]) for row in active_experiments)
+            anomalies.append(f"duplicate active hypothesis `{hypothesis}` across beads: {job_ids}")
+
+    for event in events:
+        event_type = event.get("type")
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if event_type == "escalation_sent":
+            reason = payload.get("reason") or "worker escalation"
+            target = payload.get("target") or event.get("actor")
+            anomalies.append(f"worker escalation from `{target}`: {reason}")
+        elif event_type == "session_death":
+            reason = payload.get("reason") or "session death"
+            actor = event.get("actor")
+            anomalies.append(f"session death for `{actor}`: {reason}")
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for anomaly in anomalies:
+        if anomaly in seen:
+            continue
+        seen.add(anomaly)
+        unique.append(anomaly)
+    return unique
 
 
 def load_bead_details(bead_id: str, cache: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -263,9 +389,15 @@ def fetch_jobs(max_jobs: int, namespace: str | None, registry: dict[str, dict[st
     argv = [resolve_hf_cli(), "jobs", "ps", "-a", "--format", "json"]
     if namespace:
         argv.extend(["--namespace", namespace])
-    payload = load_json_stdout(argv)
-    if not isinstance(payload, list):
-        raise SystemExit("unexpected `hf jobs ps` payload")
+    try:
+        payload = load_json_stdout(argv)
+        if not isinstance(payload, list):
+            raise SystemExit("unexpected `hf jobs ps` payload")
+        save_jobs_cache([job for job in payload if isinstance(job, dict)])
+    except SystemExit:
+        payload = load_jobs_cache()
+        if not payload:
+            raise
     jobs = [job for job in payload if isinstance(job, dict) and is_autolab_job(job, registry)]
     jobs.sort(key=job_sort_key, reverse=True)
     return jobs[:max_jobs]
@@ -331,6 +463,7 @@ def build_job_row(
         "stage": job_stage(job),
         "created_at": job.get("created_at"),
         "flavor": job.get("flavor"),
+        "mode": labels.get("mode") if isinstance(labels, dict) else registry_entry.get("mode"),
         "labels": labels if isinstance(labels, dict) else {},
         "bead_id": bead_id,
         "bead_title": bead.get("title") or registry_entry.get("bead_title"),
@@ -354,6 +487,7 @@ def build_run_config(row: dict[str, Any]) -> dict[str, Any]:
     config = {
         "job_id": row["job_id"],
         "stage": row["stage"],
+        "mode": row["mode"],
         "flavor": row["flavor"],
         "bead_id": row["bead_id"],
         "bead_title": row["bead_title"],
@@ -436,7 +570,7 @@ def sync_job_to_trackio(row: dict[str, Any], state: dict[str, Any], project: str
     return True
 
 
-def build_markdown_report(rows: list[dict[str, Any]], master: dict[str, Any]) -> str:
+def build_markdown_report(rows: list[dict[str, Any]], master: dict[str, Any], anomalies: list[str], events: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     master_hash = master.get("hash")
     master_val = master.get("val_bpb")
@@ -452,16 +586,28 @@ def build_markdown_report(rows: list[dict[str, Any]], master: dict[str, Any]) ->
         lines.append("")
 
     running = [row for row in rows if row["stage"] not in TERMINAL_STAGES]
+    running_experiments = [row for row in running if row_mode(row) == "experiment"]
+    running_other = [row for row in running if row_mode(row) != "experiment"]
     completed = [row for row in rows if row["stage"] == "COMPLETED" and isinstance(row["summary"].get("val_bpb"), (int, float))]
     completed.sort(key=lambda row: float(row["summary"]["val_bpb"]))
     failed = [row for row in rows if row["stage"] in TERMINAL_STAGES and row["stage"] != "COMPLETED"]
 
-    lines.append("## Running")
-    if running:
-        for row in running:
+    lines.append("## Running Experiments")
+    if running_experiments:
+        for row in running_experiments:
             label = row.get("bead_id") or row["job_id"]
             hypothesis = row.get("hypothesis") or row.get("bead_title") or "unlabeled"
             lines.append(f"- `{label}` `{row['job_id']}` `{row['stage']}` on `{row.get('flavor')}`: {hypothesis}")
+    else:
+        lines.append("- none")
+
+    lines.append("")
+    lines.append("## Running Non-Experiment Jobs")
+    if running_other:
+        for row in running_other:
+            label = row.get("bead_id") or row["job_id"]
+            mode = row_mode(row) or "unknown"
+            lines.append(f"- `{label}` `{row['job_id']}` `{mode}` `{row['stage']}` on `{row.get('flavor')}`")
     else:
         lines.append("- none")
 
@@ -479,6 +625,33 @@ def build_markdown_report(rows: list[dict[str, Any]], master: dict[str, Any]) ->
         lines.append("- none")
 
     lines.append("")
+    lines.append("## Anomalies")
+    if anomalies:
+        for anomaly in anomalies[:15]:
+            lines.append(f"- {anomaly}")
+    else:
+        lines.append("- none")
+
+    lines.append("")
+    lines.append("## Worker Events")
+    if events:
+        for event in events[-10:]:
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            event_type = event.get("type")
+            target = payload.get("target") or event.get("actor")
+            if event_type == "nudge":
+                detail = payload.get("reason") or "startup prompt nudge"
+            elif event_type == "escalation_sent":
+                detail = payload.get("reason") or "worker escalation"
+            elif event_type == "session_death":
+                detail = payload.get("reason") or "session death"
+            else:
+                detail = ""
+            lines.append(f"- `{target}` `{event_type}`: {detail}")
+    else:
+        lines.append("- none")
+
+    lines.append("")
     lines.append("## Failed")
     if failed:
         for row in failed[:10]:
@@ -490,16 +663,26 @@ def build_markdown_report(rows: list[dict[str, Any]], master: dict[str, Any]) ->
     return "\n".join(lines) + "\n"
 
 
-def sync_project_report(rows: list[dict[str, Any]], master: dict[str, Any], state: dict[str, Any], project: str) -> bool:
+def sync_project_report(
+    rows: list[dict[str, Any]],
+    master: dict[str, Any],
+    anomalies: list[str],
+    events: list[dict[str, Any]],
+    state: dict[str, Any],
+    project: str,
+) -> bool:
     import trackio
 
-    report = build_markdown_report(rows, master)
+    report = build_markdown_report(rows, master, anomalies, events)
     report_hash = hashlib.sha1(report.encode("utf-8")).hexdigest()
     reporter_state = state.setdefault("reporter", {"step": 0})
     if report_hash == reporter_state.get("report_hash"):
         return False
 
     completed = [row for row in rows if row["stage"] == "COMPLETED" and isinstance(row["summary"].get("val_bpb"), (int, float))]
+    active_rows = [row for row in rows if row["stage"] not in TERMINAL_STAGES]
+    active_experiments = [row for row in active_rows if row_mode(row) == "experiment"]
+    active_other = [row for row in active_rows if row_mode(row) != "experiment"]
     best_val = min((float(row["summary"]["val_bpb"]) for row in completed), default=None)
     best_delta = None
     if best_val is not None and isinstance(master.get("val_bpb"), (int, float)):
@@ -515,9 +698,13 @@ def sync_project_report(rows: list[dict[str, Any]], master: dict[str, Any], stat
         auto_log_gpu=False,
     )
     metrics: dict[str, Any] = {
-        "active_jobs": sum(1 for row in rows if row["stage"] not in TERMINAL_STAGES),
+        "active_jobs": len(active_rows),
+        "active_experiment_jobs": len(active_experiments),
+        "active_non_experiment_jobs": len(active_other),
         "completed_jobs": sum(1 for row in rows if row["stage"] == "COMPLETED"),
         "failed_jobs": sum(1 for row in rows if row["stage"] in TERMINAL_STAGES and row["stage"] != "COMPLETED"),
+        "anomaly_count": len(anomalies),
+        "worker_event_count": len(events),
         "report": trackio.Markdown(report),
     }
     if best_val is not None:
@@ -527,17 +714,28 @@ def sync_project_report(rows: list[dict[str, Any]], master: dict[str, Any], stat
 
     step = int(reporter_state.get("step", 0))
     run.log(metrics, step=step)
+    anomaly_hash = hashlib.sha1(json.dumps(anomalies, sort_keys=True).encode("utf-8")).hexdigest()
+    if anomalies and anomaly_hash != reporter_state.get("anomaly_hash"):
+        run.alert(
+            title="autolab reporting anomalies detected",
+            text="; ".join(anomalies[:3]),
+            step=step,
+        )
     run.finish()
 
     reporter_state["step"] = step + 1
     reporter_state["report_hash"] = report_hash
+    reporter_state["anomaly_hash"] = anomaly_hash
     GLOBAL_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     MARKDOWN_PATH.write_text(report, encoding="utf-8")
-    SNAPSHOT_PATH.write_text(json.dumps({"master": master, "rows": rows}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    SNAPSHOT_PATH.write_text(
+        json.dumps({"master": master, "rows": rows, "anomalies": anomalies, "events": events}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     return True
 
 
-def print_summary(rows: list[dict[str, Any]], master: dict[str, Any]) -> None:
+def print_summary(rows: list[dict[str, Any]], master: dict[str, Any], anomalies: list[str]) -> None:
     master_hash = master.get("hash")
     master_val = master.get("val_bpb")
     header = ["Trackio sync snapshot"]
@@ -558,11 +756,18 @@ def print_summary(rows: list[dict[str, Any]], master: dict[str, Any]) -> None:
         print("best: none")
 
     active = [row for row in rows if row["stage"] not in TERMINAL_STAGES]
-    print(f"active_jobs: {len(active)}")
+    active_experiments = [row for row in active if row_mode(row) == "experiment"]
+    active_other = [row for row in active if row_mode(row) != "experiment"]
+    print(f"active_jobs: {len(active)} (experiments={len(active_experiments)}, other={len(active_other)})")
     for row in active[:10]:
         label = row.get("bead_id") or row["job_id"]
         hypothesis = row.get("hypothesis") or row.get("bead_title") or "unlabeled"
-        print(f"  {label} {row['stage']} {row['job_id']} {hypothesis}")
+        mode = row_mode(row) or "unknown"
+        print(f"  {label} {mode} {row['stage']} {row['job_id']} {hypothesis}")
+    if anomalies:
+        print(f"anomalies: {len(anomalies)}")
+        for anomaly in anomalies[:5]:
+            print(f"  {anomaly}")
 
 
 def sync_once(args: argparse.Namespace) -> list[dict[str, Any]]:
@@ -572,16 +777,18 @@ def sync_once(args: argparse.Namespace) -> list[dict[str, Any]]:
     master = load_master_snapshot()
     jobs = fetch_jobs(max_jobs=args.max_jobs, namespace=args.namespace, registry=registry)
     rows = [build_job_row(job, registry, bead_cache, master, tail=args.tail, namespace=args.namespace) for job in jobs]
+    events = load_recent_events()
+    anomalies = build_anomalies(rows, events)
 
     touched = 0
     for row in rows:
         if sync_job_to_trackio(row, state, project=args.project):
             touched += 1
-    if sync_project_report(rows, master, state, project=args.project):
+    if sync_project_report(rows, master, anomalies, events, state, project=args.project):
         touched += 1
     save_state(state)
 
-    print_summary(rows, master)
+    print_summary(rows, master, anomalies)
     print(f"synced: {touched} update(s)")
     return rows
 
@@ -605,7 +812,9 @@ def summary_command(args: argparse.Namespace) -> int:
     master = load_master_snapshot()
     jobs = fetch_jobs(max_jobs=args.max_jobs, namespace=args.namespace, registry=registry)
     rows = [build_job_row(job, registry, bead_cache, master, tail=args.tail, namespace=args.namespace) for job in jobs]
-    print(build_markdown_report(rows, master), end="")
+    events = load_recent_events()
+    anomalies = build_anomalies(rows, events)
+    print(build_markdown_report(rows, master, anomalies, events), end="")
     return 0
 
 

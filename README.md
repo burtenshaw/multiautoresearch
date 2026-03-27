@@ -69,6 +69,7 @@ python3 scripts/refresh_master.py --fetch-dag
 4. Launch one managed benchmark job:
 
 ```bash
+python3 scripts/hf_job.py preflight
 python3 scripts/hf_job.py launch --mode experiment
 # note the job id from the JSON output, then:
 python3 scripts/hf_job.py logs <JOB_ID> --follow --output /tmp/autolab-run.log
@@ -81,6 +82,10 @@ python3 scripts/parse_metric.py /tmp/autolab-run.log
 uv run scripts/trackio_reporter.py sync --project autolab
 uv run scripts/trackio_reporter.py dashboard --project autolab --mcp-server --no-footer
 ```
+
+The reporter summary now calls out duplicate active jobs, bead-scoped `prepare`
+jobs, and recent worker nudges or escalations so you can recover paid slots
+before launching more work.
 
 6. If the result beats current master, submit it:
 

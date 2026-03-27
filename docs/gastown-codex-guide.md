@@ -194,6 +194,7 @@ python3 scripts/hf_job.py launch --mode prepare
 Per experiment:
 
 ```bash
+python3 scripts/hf_job.py preflight
 python3 scripts/hf_job.py launch --mode experiment
 # note the job id from the JSON output, then:
 python3 scripts/hf_job.py logs <JOB_ID> --follow --output /tmp/autolab-run.log
@@ -228,6 +229,16 @@ tmux new-session -d -s autolab-reporter \
 
 The reporter dashboard stays local to the operator machine while the metrics
 come from HF Jobs logs, not from manual copy-paste.
+
+Use the reporter summary before launching more work:
+
+```bash
+uv run scripts/trackio_reporter.py summary --max-jobs 25
+```
+
+If it shows duplicate active jobs, bead-scoped `prepare` jobs, or fresh worker
+nudges, treat those as capacity leaks and fix them before adding more
+parallelism.
 
 ## Keep GPU Capacity Honest
 

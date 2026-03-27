@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import difflib
 import json
 import os
 import re
@@ -23,6 +24,7 @@ HF_JOB_STATE_DIR = RUNTIME_DIR / "hf-jobs"
 AUTOLAB_HOME = "/autolab-home"
 AUTOLAB_CACHE_MOUNT = f"{AUTOLAB_HOME}/.cache/autoresearch"
 BEAD_PATTERN = re.compile(r"\bau-[a-z0-9]+\b")
+TERMINAL_JOB_STAGES = {"COMPLETED", "CANCELED", "CANCELLED", "FAILED", "TIMEOUT", "ERROR"}
 SUMMARY_KEYS = {
     "val_bpb",
     "training_seconds",
@@ -41,6 +43,17 @@ PREPARE_DEPENDENCIES = {
     "tiktoken",
     "torch",
 }
+KNOWN_CHANGE_CATEGORY_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("scheduler", ("FINAL_LR_FRAC", "WARMDOWN_RATIO", "get_lr_multiplier")),
+    ("lm_head_weight_decay", ("lm_head_params", "weight_decay")),
+    ("value_embeds_weight_decay", ("value_embeds_params", "weight_decay")),
+    ("muon_beta2", ("momentum=0.95", "beta2=")),
+    ("window_pattern", ("WINDOW_PATTERN",)),
+    ("gqa_kv_heads", ("n_kv_head",)),
+    ("value_embed_stride", ("has_ve", "layer_idx %")),
+    ("attention_branch_scale", ("1.3 *", "attn_out")),
+    ("attention_temperature", ("temperature",)),
+)
 
 
 def load_pyproject() -> dict[str, object]:
@@ -473,6 +486,205 @@ def collect_launch_context() -> dict[str, object]:
     return context
 
 
+def job_stage(job: dict[str, object]) -> str:
+    status = job.get("status")
+    if isinstance(status, dict):
+        stage = status.get("stage")
+        if isinstance(stage, str) and stage:
+            return stage.upper()
+    return "UNKNOWN"
+
+
+def fetch_active_jobs(namespace: str | None) -> list[dict[str, object]]:
+    argv = [resolve_hf_cli(), "jobs", "ps", "-a", "--format", "json"]
+    if namespace:
+        argv.extend(["--namespace", namespace])
+    result = run_command(argv, capture_output=True)
+    if result.returncode != 0:
+        stderr = result.stderr.strip() if result.stderr else "command failed"
+        raise RuntimeError(f"unable to query active HF Jobs: {stderr}")
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"unable to parse HF Jobs listing: {exc}") from exc
+    if not isinstance(payload, list):
+        raise RuntimeError("unexpected `hf jobs ps` payload")
+    active: list[dict[str, object]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        if job_stage(item) in TERMINAL_JOB_STAGES:
+            continue
+        active.append(item)
+    return active
+
+
+def train_diff_preview(limit: int = 24) -> tuple[list[str], int, int]:
+    orig_path = ROOT / "train_orig.py"
+    train_path = ROOT / "train.py"
+    if not orig_path.exists() or not train_path.exists():
+        return [], 0, 0
+    orig_lines = orig_path.read_text(encoding="utf-8").splitlines()
+    train_lines = train_path.read_text(encoding="utf-8").splitlines()
+    diff_lines = list(
+        difflib.unified_diff(
+            orig_lines,
+            train_lines,
+            fromfile="train_orig.py",
+            tofile="train.py",
+            n=0,
+            lineterm="",
+        )
+    )
+    hunk_count = sum(1 for line in diff_lines if line.startswith("@@"))
+    changed_line_count = sum(
+        1
+        for line in diff_lines
+        if (line.startswith("+") or line.startswith("-")) and not line.startswith(("+++", "---"))
+    )
+    preview = diff_lines[:limit]
+    return preview, hunk_count, changed_line_count
+
+
+def detect_known_change_categories(preview: list[str]) -> list[str]:
+    changed_lines = [line[1:] for line in preview if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))]
+    categories: list[str] = []
+    for name, needles in KNOWN_CHANGE_CATEGORY_PATTERNS:
+        if all(any(needle in line for line in changed_lines) for needle in needles):
+            categories.append(name)
+    return categories
+
+
+def build_preflight_report(context: dict[str, object], namespace: str | None) -> dict[str, object]:
+    report: dict[str, object] = {
+        "context": context,
+        "errors": [],
+        "warnings": [],
+    }
+    errors = report["errors"]
+    warnings = report["warnings"]
+    assert isinstance(errors, list)
+    assert isinstance(warnings, list)
+
+    train_path = ROOT / "train.py"
+    orig_path = ROOT / "train_orig.py"
+    report["train_exists"] = train_path.exists()
+    report["train_orig_exists"] = orig_path.exists()
+    if not train_path.exists():
+        errors.append("missing train.py")
+    if not orig_path.exists():
+        errors.append("missing train_orig.py; run refresh_master first")
+
+    preview, hunk_count, changed_line_count = train_diff_preview()
+    report["diff_preview"] = preview
+    report["diff_hunks"] = hunk_count
+    report["diff_changed_lines"] = changed_line_count
+    report["known_change_categories"] = detect_known_change_categories(preview)
+
+    if orig_path.exists() and train_path.exists():
+        same = train_path.read_text(encoding="utf-8") == orig_path.read_text(encoding="utf-8")
+        report["train_matches_orig"] = same
+        if same:
+            errors.append("train.py matches train_orig.py; no experiment change is present")
+        elif hunk_count == 0:
+            errors.append("unable to compute a diff between train.py and train_orig.py")
+        if changed_line_count > 24:
+            warnings.append("train.py differs from train_orig.py by many lines; review for accidental multi-change drift")
+        categories = report["known_change_categories"]
+        if isinstance(categories, list) and len(categories) > 1:
+            errors.append(
+                "train.py appears to change multiple known hypothesis categories relative to train_orig.py: "
+                + ", ".join(categories)
+            )
+        elif not categories and hunk_count > 3:
+            warnings.append("train.py diff spans multiple hunks and does not match a known single-change category")
+
+    bead_id = context.get("bead_id")
+    hypothesis = context.get("hypothesis")
+    active_conflicts: list[dict[str, object]] = []
+    active_job_warnings: list[str] = []
+    try:
+        active_jobs = fetch_active_jobs(namespace)
+    except RuntimeError as exc:
+        active_jobs = []
+        active_job_warnings.append(str(exc))
+
+    for job in active_jobs:
+        labels = job.get("labels")
+        if not isinstance(labels, dict):
+            continue
+        mode = labels.get("mode")
+        if isinstance(bead_id, str) and labels.get("bead") == bead_id and mode == "experiment":
+            active_conflicts.append(
+                {
+                    "job_id": job.get("id"),
+                    "reason": f"active experiment already exists for bead {bead_id}",
+                    "mode": mode,
+                    "stage": job_stage(job),
+                    "flavor": job.get("flavor"),
+                }
+            )
+        elif isinstance(hypothesis, str) and labels.get("hypothesis") == hypothesis and mode == "experiment":
+            active_job_warnings.append(
+                f"another active experiment shares hypothesis label {hypothesis}: {job.get('id')}"
+            )
+
+    report["active_conflicts"] = active_conflicts
+    report["active_job_warnings"] = active_job_warnings
+    return report
+
+
+def print_preflight_report(report: dict[str, object]) -> None:
+    print("Preflight:")
+    context = report.get("context")
+    if isinstance(context, dict):
+        bead_id = context.get("bead_id")
+        hypothesis = context.get("hypothesis")
+        master_hash = context.get("master_hash")
+        parts: list[str] = []
+        if isinstance(bead_id, str) and bead_id:
+            parts.append(f"bead={bead_id}")
+        if isinstance(hypothesis, str) and hypothesis:
+            parts.append(f"hypothesis={hypothesis}")
+        if isinstance(master_hash, str) and master_hash:
+            parts.append(f"master={master_hash[:12]}")
+        if parts:
+            print("  " + " | ".join(parts))
+
+    print(
+        "  "
+        + f"diff_hunks={report.get('diff_hunks', 0)}"
+        + f" changed_lines={report.get('diff_changed_lines', 0)}"
+        + f" categories={report.get('known_change_categories', [])}"
+    )
+    preview = report.get("diff_preview")
+    if isinstance(preview, list) and preview:
+        print("  diff preview:")
+        for line in preview:
+            print(f"    {line}")
+    errors = report.get("errors")
+    if isinstance(errors, list):
+        for entry in errors:
+            print(f"  ERROR: {entry}")
+    warnings = report.get("warnings")
+    if isinstance(warnings, list):
+        for entry in warnings:
+            print(f"  WARN: {entry}")
+    active_job_warnings = report.get("active_job_warnings")
+    if isinstance(active_job_warnings, list):
+        for entry in active_job_warnings:
+            print(f"  WARN: {entry}")
+    active_conflicts = report.get("active_conflicts")
+    if isinstance(active_conflicts, list):
+        for entry in active_conflicts:
+            if isinstance(entry, dict):
+                print(
+                    "  ERROR: "
+                    + str(entry.get("reason", "active conflict"))
+                    + f" ({entry.get('job_id')}, {entry.get('stage')}, {entry.get('flavor')})"
+                )
+
+
 def resolve_bucket(explicit: str | None) -> str | None:
     return explicit or os.environ.get("AUTOLAB_HF_BUCKET")
 
@@ -588,6 +800,27 @@ def launch_job(args: argparse.Namespace) -> int:
         raise SystemExit("AUTOLAB_HF_BUCKET is required for prepare and experiment jobs")
 
     context = collect_launch_context()
+    preflight_report: dict[str, object] | None = None
+    if args.mode == "prepare" and context.get("bead_id") and not args.allow_bead_prepare:
+        raise SystemExit(
+            "prepare jobs are rig-wide bootstrap work; do not launch them from a bead branch. "
+            "Run prepare once from the planner workspace, or pass --allow-bead-prepare if you really mean it."
+        )
+    if args.mode == "experiment":
+        preflight_report = build_preflight_report(context, args.namespace)
+        print_preflight_report(preflight_report)
+        errors = []
+        if isinstance(preflight_report.get("errors"), list):
+            errors.extend(str(item) for item in preflight_report["errors"])
+        conflicts = preflight_report.get("active_conflicts")
+        if isinstance(conflicts, list) and conflicts and not args.allow_duplicate:
+            errors.append("active experiment conflict detected")
+        if errors and not args.allow_preflight_fail:
+            raise SystemExit(
+                "preflight failed:\n- " + "\n- ".join(errors) + "\n"
+                + "Fix the workspace or pass --allow-preflight-fail / --allow-duplicate to override."
+            )
+
     bundle_path = render_bundle(args.mode, args.output)
     flavor = args.flavor or default_flavor(args.mode)
     timeout = args.timeout or default_timeout(args.mode)
@@ -632,6 +865,8 @@ def launch_job(args: argparse.Namespace) -> int:
         "command": command,
         "labels": parse_label_entries(label_entries),
     }
+    if preflight_report is not None:
+        state["preflight"] = preflight_report
     state.update(context)
     job_id = parse_job_id(combined_output)
     if job_id:
@@ -708,6 +943,18 @@ def inspect_job(args: argparse.Namespace) -> int:
     return result.returncode
 
 
+def preflight_command(args: argparse.Namespace) -> int:
+    context = collect_launch_context()
+    report = build_preflight_report(context, args.namespace)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print_preflight_report(report)
+    has_errors = isinstance(report.get("errors"), list) and bool(report["errors"])
+    has_conflicts = isinstance(report.get("active_conflicts"), list) and bool(report["active_conflicts"])
+    return 2 if has_errors or has_conflicts else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage Autolab benchmark jobs on Hugging Face Jobs.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -726,10 +973,17 @@ def build_parser() -> argparse.ArgumentParser:
     launch_parser.add_argument("--env", action="append", default=[], help="extra HF Jobs --env entries")
     launch_parser.add_argument("--label", action="append", default=[], help="extra HF Jobs --label entries")
     launch_parser.add_argument("--skip-bucket-create", action="store_true", help="do not create the bucket before launch")
+    launch_parser.add_argument("--allow-duplicate", action="store_true", help="allow launching even if an active experiment already exists for this bead")
+    launch_parser.add_argument("--allow-preflight-fail", action="store_true", help="launch even when train.py preflight reports errors")
+    launch_parser.add_argument("--allow-bead-prepare", action="store_true", help="allow a prepare job from a bead worktree (normally blocked)")
     launch_parser.set_defaults(detach=True)
     detach_group = launch_parser.add_mutually_exclusive_group()
     detach_group.add_argument("--detach", dest="detach", action="store_true", help="submit in background (default)")
     detach_group.add_argument("--no-detach", dest="detach", action="store_false", help="stream logs during submission")
+
+    preflight_parser = subparsers.add_parser("preflight", help="audit the current workspace before launching an experiment")
+    preflight_parser.add_argument("--namespace", help="namespace that owns the jobs")
+    preflight_parser.add_argument("--json", action="store_true", help="emit the preflight report as JSON")
 
     logs_parser = subparsers.add_parser("logs", help="stream or fetch HF Jobs logs")
     logs_parser.add_argument("job_id", nargs="?", help="HF job id; defaults to the last launched job")
@@ -755,6 +1009,8 @@ def main() -> int:
         return 0
     if args.command == "launch":
         return launch_job(args)
+    if args.command == "preflight":
+        return preflight_command(args)
     if args.command == "logs":
         return stream_logs(args)
     if args.command == "inspect":

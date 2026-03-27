@@ -67,6 +67,17 @@ run:
 - Record paper-derived ideas in `research/paper-ideas.md`.
 - Do not claim a win or submit a patch without a benchmark run.
 
+## Local Skills
+
+- `autolab-managed-experiment`
+  Use for any bead that should become exactly one managed HF Jobs experiment.
+- `autolab-reporter`
+  Use for Trackio, active-job review, anomaly review, and experiment-board
+  summaries.
+- `hf-cli`
+  Use for Hugging Face Hub CLI operations such as jobs, buckets, auth, and
+  papers.
+
 ## Local Compatibility
 
 `run-local.sh` sets `AUTOLAB_FORCE_FA3_REDIRECT=1`, and `sitecustomize.py`
