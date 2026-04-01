@@ -36,6 +36,16 @@ experiments.
   isolated git worktree created through `uv run scripts/opencode_worker.py create`.
 - Active `experiment-worker` count must never exceed real GPU capacity.
 
+## Secondary Native Integrations
+
+- OpenCode remains the canonical implementation in this repo.
+- Optional Claude Code-native assets live in `.claude/` plus `CLAUDE.md`.
+- Optional Codex-native assets live in `.codex/`.
+- These secondary integrations must follow the same local-master, HF Jobs,
+  Trackio, and `research/results.tsv` workflow as OpenCode.
+- Do not reintroduce hosted Autolab or Gastown-era control-plane state through
+  these secondary integrations.
+
 ## Managed Runner
 
 The default benchmark path in this repo is Hugging Face Jobs, not a local CUDA

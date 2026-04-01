@@ -1,142 +1,72 @@
-# Winning Autolab With Claude Code Subagents
+# Claude Code Subagents Guide
 
-This guide adds a Claude Code-native coordination path to this repo.
+OpenCode is the canonical control plane for this repo.
 
-The goal is unchanged: maximize useful, non-duplicated experiments per
-GPU-hour until you beat current master on `val_bpb`.
+This guide describes the secondary Claude Code-native integration. It follows
+the same local workflow:
 
-## Concept Map
+- no hosted Autolab backend
+- no Gastown assets or terminology
+- local promoted master in `train_orig.py`, `research/live/master.json`, and
+  `research/results.tsv`
+- managed benchmark runs through Hugging Face Jobs
+- observability through Trackio
 
-- repo instructions -> `CLAUDE.md`
-- custom agents -> `.claude/agents/`
-- repo guardrails -> `.claude/settings.json`
-- research campaign template -> `claude/templates/campaign.md`
-- experiment assignment template -> `claude/templates/experiment-task.md`
-- durable ledger -> `research/do-not-repeat.md`
-
-## Checked-In Claude Assets
+The Claude Code-native pieces are:
 
 - `CLAUDE.md`
-  Project memory entrypoint for Claude Code. It imports `AGENTS.md` and this
-  guide so the repo rules load at session start.
 - `.claude/settings.json`
-  Project permission guardrails. It blocks direct edits to `prepare.py`.
+- `.claude/agents/autolab.md`
 - `.claude/agents/planner.md`
-  Read-only experiment planner.
 - `.claude/agents/experiment-worker.md`
-  Background, worktree-isolated benchmark executor.
 - `.claude/agents/memory-keeper.md`
-  Durable markdown and duplicate-prevention maintainer.
 - `.claude/agents/reviewer.md`
-  Read-only rule and comparability reviewer.
-- `.worktreeinclude`
-  Copies `.claude/settings.local.json` into Claude worktrees when present.
-- `claude/templates/campaign.md`
-  Template for one research campaign.
-- `claude/templates/experiment-task.md`
-  Template for one experiment assignment.
-- `claude/templates/do-not-repeat.md`
-  Template for the duplicate-prevention ledger.
+- `.claude/agents/reporter.md`
+- `.claude/agents/researcher.md`
 
-## Minimal Workflow
+## Recommended Start
 
-1. Refresh current master and the DAG:
+From the repo root:
 
 ```bash
-python3 scripts/refresh_master.py --fetch-dag
+claude --agent autolab
 ```
 
-2. Review the current notebook:
+Treat `claude --agent autolab` as the canonical launch path for this repo. Some
+Claude Code builds may not list project agents consistently in `claude agents`
+or `/agents`, even when direct launch works.
+
+For a longer prompt skeleton:
+
+```bash
+uv run scripts/print_claude_kickoff.py --gpu-slots 1
+```
+
+## Workflow
+
+The Claude-native flow mirrors the OpenCode flow:
+
+1. read `AGENTS.md`
+2. refresh from local promoted master
+3. use `planner` for fresh queues
+4. use `reviewer` for rule checks
+5. use `experiment-worker` for exactly one managed HF Jobs run
+6. use `memory-keeper` to persist durable notes in the main checkout
+7. use `reporter` for Trackio and HF Jobs summaries
+
+The worker is configured with `background: true` and `isolation: worktree`, so
+it uses Claude Code's native worktree integration rather than a repo-specific
+worker launcher.
+
+## Durable State
+
+Use the same repo-local notebook and ledger as OpenCode:
 
 - `research/notes.md`
 - `research/do-not-repeat.md`
 - `research/campaigns/`
 - `research/experiments/`
+- `research/results.tsv`
 
-3. Start Claude Code from the repo root and use the kickoff prompt:
-
-```bash
-python3 scripts/print_claude_kickoff.py --gpu-slots 1
-claude
-```
-
-4. In the parent Claude session:
-
-- ask `planner` for a short ranked queue of fresh, non-duplicate experiments
-- create or update a campaign note in `research/campaigns/`
-- create one experiment note per hypothesis in `research/experiments/`
-- spawn at most one active `experiment-worker` per real H100
-- use `reviewer` when you want a read-only rule check before running or submitting
-- use `memory-keeper` after each worker finishes to persist the result in the main checkout
-
-## Parent Session Prompt
-
-The helper script prints a standard parent prompt. The important constraints are:
-
-- active `experiment-worker` count must never exceed real GPU capacity
-- planner and reviewer stay read-only
-- each worker gets one hypothesis only
-- benchmark runs must use the canonical local scripts
-- every run, including failures, must be persisted to markdown
-
-## Parallelism And Worktrees
-
-The checked-in `experiment-worker` agent is configured with:
-
-- `background: true` so long-running workers do not block the parent session
-- `isolation: worktree` so parallel workers edit and benchmark in separate worktrees
-
-Operational rules:
-
-- keep worker benchmark logs under `research/live/` with unique names per experiment
-- do not rely on a worker's markdown edits in its isolated worktree as the durable notebook
-- after each worker result, run `memory-keeper` in the main checkout to update the shared ledger
-
-For multiple top-level Claude sessions, you can also start independent worktrees:
-
-```bash
-claude --worktree planner
-claude --worktree worker-0
-```
-
-## Experiment Note Discipline
-
-Use `claude/templates/experiment-task.md` for every worker assignment. Keep each
-note self-contained so a worker can execute without improvising. Every
-assignment should include:
-
-- one-sentence hypothesis
-- parent master hash
-- master `val_bpb` at dispatch time
-- exact single variable being changed
-- expected upside
-- reason it is not a duplicate
-- a unique log path under `research/live/`
-
-After the run, record:
-
-- local `val_bpb`
-- submit or no-submit
-- short interpretation
-- failure mode if invalid or regressed
-- one short note that `memory-keeper` can fold into `research/notes.md`
-
-## Campaign Discipline
-
-Use `claude/templates/campaign.md` to group related experiments. A campaign
-should have one theme only. Pause or close the campaign when:
-
-- master changes invalidate the queue
-- the theme is exhausted
-- recent runs show the branch is weak
-
-## What Good Looks Like
-
-You are using the Claude-native flow well when:
-
-- experiment notes are consistently well-formed
-- duplicate ideas are being rejected early
-- regressions are being captured in `research/do-not-repeat.md`
-- workers stop stale-master work instead of improvising
-- submissions happen only after a valid local win
-- parallel workers do not collide on checkout state or log paths
+Use `research/templates/` as the canonical template source. Do not recreate a
+parallel Claude-specific template tree.

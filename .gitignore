@@ -18,3 +18,17 @@ research/live/*
 # Local runtime state
 .runtime/
 state.json
+
+# Local generated capture artifacts
+images/alerts.png
+images/architecture.png
+images/convoys.png
+images/delta_vs_master.png
+images/gastown_wave2_running_jobs.csv
+images/gastown_wave2_running_jobs.png
+images/polecat_status.png
+images/tables.png
+images/terminal_vid.gif
+images/terminal_vid.mov
+opencode-multi-snippet.screenstudio/
+opencode_subagents.mp4

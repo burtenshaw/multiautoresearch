@@ -11,11 +11,15 @@ def build_prompt(repo_root: Path, campaign: str, gpu_slots: int, max_ideas: int)
     return f"""Open Claude Code in:
 {repo_root}
 
-Project instructions load from CLAUDE.md.
+OpenCode is the canonical control plane, but this session should use the native
+Claude Code implementation.
+
+Start with:
+- `claude --agent autolab`
 
 Use a parent prompt like:
 
-You are coordinating autolab experiments in this repo.
+You are coordinating local Autolab experiments in this repo.
 
 Read:
 - CLAUDE.md
@@ -26,27 +30,25 @@ Read:
 - research/do-not-repeat.md
 - research/campaigns/
 - research/experiments/
-- research/reference/master.seed.json
-- research/reference/dag.seed.json
+- research/results.tsv
+- research/live/master.json
+- research/live/dag.json
 
-Check `/agents` and make sure the project agents are loaded.
-
-Ask the `planner` subagent for up to {max_ideas} fresh,
-non-duplicate experiments for the campaign "{campaign}".
+Use planner to propose up to {max_ideas} fresh, non-duplicate experiments for
+the campaign "{campaign}".
 
 Do not run more than {gpu_slots} `experiment-worker` subagents concurrently.
-Each `experiment-worker` gets one hypothesis only, runs in its own worktree,
-and should keep its benchmark log under `research/live/` with a unique name.
-Use `reviewer` for read-only rule checks when a plan or result looks borderline.
-After each worker finishes, use `memory-keeper` to update the durable ledger and
-campaign note in the main checkout.
+Use reviewer for read-only rule checks, researcher for paper scouting, reporter
+for Trackio/HF Jobs status, and memory-keeper after each worker finishes to
+update the durable notebook in the main checkout.
 
 Keep all experiments comparable:
-- refresh from current master
+- refresh from current local master
 - edit `train.py` only unless explicitly authorized otherwise
 - one hypothesis change per run
-- run the canonical timed benchmark
-- submit only if local `val_bpb` beats current master
+- run the canonical managed benchmark on Hugging Face Jobs
+- record every completed run locally
+- promote only if local `val_bpb` beats current master
 """
 
 

@@ -10,6 +10,8 @@ These scripts are the public operator entrypoints for this repo.
 | `scripts/hf_job.py` | Preflight, render, launch, inspect, and tail managed HF Jobs | Hugging Face Jobs, local files |
 | `scripts/opencode_worker.py` | Create, run, and clean isolated OpenCode experiment worktrees | Git worktrees, OpenCode, local files |
 | `scripts/print_opencode_kickoff.py` | Print a parent-session kickoff prompt | Local files only |
+| `scripts/print_claude_kickoff.py` | Print a Claude Code-native kickoff prompt | Local files only |
+| `scripts/print_codex_kickoff.py` | Print a Codex-native kickoff prompt | Local files only |
 | `scripts/parse_metric.py` | Parse the final metric block from a run log | Local files only |
 | `scripts/submit_patch.py` | Append a run to `research/results.tsv` and locally promote if it wins | Local files, optional Hugging Face Jobs logs |
 | `scripts/sync_upstream.py` | Diff or apply upstream-tracked core files from `karpathy/autoresearch` | GitHub raw files |
@@ -77,6 +79,28 @@ These scripts are the public operator entrypoints for this repo.
   - a standard parent-session prompt to stdout
 - Use when:
   - starting a fresh OpenCode planning session in the repo root
+
+## `scripts/print_claude_kickoff.py`
+
+- Inputs:
+  - optional `--campaign`, `--gpu-slots`, `--max-ideas`
+- Environment:
+  - none
+- Outputs:
+  - a standard parent-session prompt for the secondary Claude Code-native workflow
+- Use when:
+  - starting a Claude Code session that should follow the same local-master and HF Jobs workflow as OpenCode
+
+## `scripts/print_codex_kickoff.py`
+
+- Inputs:
+  - optional `--campaign`, `--gpu-slots`, `--max-ideas`
+- Environment:
+  - none
+- Outputs:
+  - a standard parent-session prompt for the secondary Codex-native workflow
+- Use when:
+  - starting a Codex session that should follow the same local-master and HF Jobs workflow as OpenCode
 
 ## `scripts/parse_metric.py`
 

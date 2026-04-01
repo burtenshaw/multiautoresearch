@@ -122,6 +122,10 @@ the repo scripts, HF Jobs, HF buckets, and the local results ledger.
   Repo rules and the agent operating contract.
 - [docs/opencode-workflow.md](/Users/ben/code/open-autolab/docs/opencode-workflow.md)
   Full parent-session and worker workflow.
+- [docs/claude-subagents-guide.md](/Users/ben/code/open-autolab/docs/claude-subagents-guide.md)
+  Optional secondary Claude Code-native integration.
+- [docs/codex-subagents-guide.md](/Users/ben/code/open-autolab/docs/codex-subagents-guide.md)
+  Optional secondary Codex-native integration.
 - [docs/script-reference.md](/Users/ben/code/open-autolab/docs/script-reference.md)
   Direct script interfaces, if you need them.
 - [docs/getting-started.md](/Users/ben/code/open-autolab/docs/getting-started.md)

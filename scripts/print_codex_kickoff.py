@@ -11,9 +11,12 @@ def build_prompt(repo_root: Path, campaign: str, gpu_slots: int, max_ideas: int)
     return f"""Open Codex in:
 {repo_root}
 
+OpenCode is the canonical control plane, but this session should use the native
+Codex subagent implementation.
+
 Use a parent prompt like:
 
-You are coordinating autolab experiments in this repo.
+You are coordinating local Autolab experiments in this repo.
 
 Read:
 - AGENTS.md
@@ -23,23 +26,28 @@ Read:
 - research/do-not-repeat.md
 - research/campaigns/
 - research/experiments/
-- research/reference/master.seed.json
-- research/reference/dag.seed.json
+- research/results.tsv
+- research/live/master.json
+- research/live/dag.json
 
-Spawn the `planner` subagent and ask it for up to {max_ideas} fresh,
-non-duplicate experiments for the campaign "{campaign}".
+Spawn `planner` and ask it for up to {max_ideas} fresh, non-duplicate
+experiments for the campaign "{campaign}".
 
-Do not run more than {gpu_slots} `experiment_worker` subagents concurrently.
-Use `reviewer` for read-only rule checks when a plan or result looks borderline.
-After each worker finishes, use `memory_keeper` to update the durable ledger and
-campaign note.
+Use `reviewer` for read-only rule checks, `researcher` for paper scouting,
+`reporter` for Trackio/HF Jobs status, and `memory_keeper` after each worker
+finishes to update the durable notebook.
+
+Do not run more than {gpu_slots} active `experiment_worker` subagents in this
+checkout. If you need more concurrent benchmark runs, open separate git
+worktrees and run additional top-level Codex sessions there.
 
 Keep all experiments comparable:
-- refresh from current master
+- refresh from current local master
 - edit `train.py` only unless explicitly authorized otherwise
 - one hypothesis change per run
-- run the canonical timed benchmark
-- submit only if local `val_bpb` beats current master
+- run the canonical managed benchmark on Hugging Face Jobs
+- record every completed run locally
+- promote only if local `val_bpb` beats current master
 """
 
 
