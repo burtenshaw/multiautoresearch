@@ -13,7 +13,11 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
+    import tomli as tomllib
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,9 +25,9 @@ RUNTIME_DIR = ROOT / ".runtime"
 DEFAULT_BUNDLE = RUNTIME_DIR / "autolab-hf-job.py"
 LAST_JOB_PATH = RUNTIME_DIR / "hf-job-last.json"
 HF_JOB_STATE_DIR = RUNTIME_DIR / "hf-jobs"
+HF_JOB_LOG_DIR = RUNTIME_DIR / "hf-logs"
 AUTOLAB_HOME = "/autolab-home"
 AUTOLAB_CACHE_MOUNT = f"{AUTOLAB_HOME}/.cache/autoresearch"
-BEAD_PATTERN = re.compile(r"\bau-[a-z0-9]+\b")
 TERMINAL_JOB_STAGES = {"COMPLETED", "CANCELED", "CANCELLED", "FAILED", "TIMEOUT", "ERROR"}
 DEFAULT_NAMESPACE = os.environ.get("AUTOLAB_HF_NAMESPACE")
 SUMMARY_KEYS = {
@@ -309,7 +313,7 @@ def main() -> int:
     missing = cache_missing(cache_root)
     if missing:
         print("Autolab cache missing: " + ", ".join(missing), file=sys.stderr)
-        print("Run `python3 scripts/hf_job.py launch --mode prepare` first.", file=sys.stderr)
+        print("Run `uv run scripts/hf_job.py launch --mode prepare` first.", file=sys.stderr)
         return 2
 
     log_path = artifact_dir / "autolab-run.log"
@@ -397,59 +401,29 @@ def slugify_label_value(value: str, max_len: int = 48) -> str:
     return slug[:max_len].rstrip("_")
 
 
-def branch_context(branch: str | None) -> dict[str, str]:
+def env_context() -> dict[str, str]:
     context: dict[str, str] = {}
-    if not branch:
-        return context
-    context["branch"] = branch
-    bead_match = BEAD_PATTERN.search(branch)
-    if bead_match:
-        context["bead_id"] = bead_match.group(0)
-    if branch.startswith("polecat/"):
-        parts = branch.split("/")
-        if len(parts) >= 3:
-            context["polecat"] = parts[1]
+    for env_name, key in (
+        ("AUTOLAB_CAMPAIGN", "campaign"),
+        ("AUTOLAB_EXPERIMENT_ID", "experiment_id"),
+        ("AUTOLAB_WORKER_ID", "worker_id"),
+        ("AUTOLAB_HYPOTHESIS", "hypothesis"),
+    ):
+        value = os.environ.get(env_name)
+        if isinstance(value, str):
+            value = value.strip()
+        if value:
+            context[key] = value
     return context
 
 
-def bead_details(bead_id: str | None) -> dict[str, str]:
-    if not bead_id:
-        return {}
-    result = subprocess.run(
-        ["bd", "show", "--json", "--long", f"--id={bead_id}"],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0 or not result.stdout.strip():
-        return {}
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return {}
-    record: dict[str, object] | None
-    if isinstance(payload, list):
-        record = payload[0] if payload else None
-    elif isinstance(payload, dict):
-        record = payload
-    else:
-        record = None
-    if not isinstance(record, dict):
-        return {}
-
-    details: dict[str, str] = {}
-    for key in ("title", "status", "assignee"):
-        value = record.get(key)
-        if isinstance(value, str) and value:
-            details[f"bead_{key}"] = value
-    title = details.get("bead_title")
-    if title:
-        title_suffix = title.split(":", 1)[-1].strip()
-        slug = slugify_label_value(title_suffix)
+def label_value(context: dict[str, object], key: str) -> str | None:
+    value = context.get(key)
+    if isinstance(value, str) and value:
+        slug = slugify_label_value(value)
         if slug:
-            details["hypothesis"] = slug
-    return details
+            return slug
+    return None
 
 
 def collect_launch_context() -> dict[str, object]:
@@ -463,7 +437,10 @@ def collect_launch_context() -> dict[str, object]:
         context["git_commit"] = git_commit
 
     branch = git_output("git", "rev-parse", "--abbrev-ref", "HEAD")
-    context.update(branch_context(branch))
+    if branch:
+        context["branch"] = branch
+
+    context.update(env_context())
 
     master_data = load_json_file(ROOT / "research" / "live" / "master.json")
     if master_data:
@@ -473,16 +450,6 @@ def collect_launch_context() -> dict[str, object]:
             context["master_hash"] = master_hash
         if isinstance(master_val_bpb, (int, float)):
             context["master_val_bpb"] = master_val_bpb
-
-    env_override = os.environ.get("AUTOLAB_HYPOTHESIS")
-    if env_override:
-        slug = slugify_label_value(env_override)
-        if slug:
-            context["hypothesis"] = slug
-
-    bead_id = context.get("bead_id")
-    if isinstance(bead_id, str):
-        context.update(bead_details(bead_id))
 
     return context
 
@@ -600,8 +567,8 @@ def build_preflight_report(context: dict[str, object], namespace: str | None) ->
         elif not categories and hunk_count > 3:
             warnings.append("train.py diff spans multiple hunks and does not match a known single-change category")
 
-    bead_id = context.get("bead_id")
-    hypothesis = context.get("hypothesis")
+    experiment_id = label_value(context, "experiment_id")
+    hypothesis = label_value(context, "hypothesis")
     active_conflicts: list[dict[str, object]] = []
     active_job_warnings: list[str] = []
     try:
@@ -615,11 +582,11 @@ def build_preflight_report(context: dict[str, object], namespace: str | None) ->
         if not isinstance(labels, dict):
             continue
         mode = labels.get("mode")
-        if isinstance(bead_id, str) and labels.get("bead") == bead_id and mode == "experiment":
+        if isinstance(experiment_id, str) and labels.get("experiment") == experiment_id and mode == "experiment":
             active_conflicts.append(
                 {
                     "job_id": job.get("id"),
-                    "reason": f"active experiment already exists for bead {bead_id}",
+                    "reason": f"active experiment already exists for experiment {experiment_id}",
                     "mode": mode,
                     "stage": job_stage(job),
                     "flavor": job.get("flavor"),
@@ -639,12 +606,18 @@ def print_preflight_report(report: dict[str, object]) -> None:
     print("Preflight:")
     context = report.get("context")
     if isinstance(context, dict):
-        bead_id = context.get("bead_id")
+        campaign = context.get("campaign")
+        experiment_id = context.get("experiment_id")
         hypothesis = context.get("hypothesis")
+        worker_id = context.get("worker_id")
         master_hash = context.get("master_hash")
         parts: list[str] = []
-        if isinstance(bead_id, str) and bead_id:
-            parts.append(f"bead={bead_id}")
+        if isinstance(campaign, str) and campaign:
+            parts.append(f"campaign={campaign}")
+        if isinstance(experiment_id, str) and experiment_id:
+            parts.append(f"experiment={experiment_id}")
+        if isinstance(worker_id, str) and worker_id:
+            parts.append(f"worker={worker_id}")
         if isinstance(hypothesis, str) and hypothesis:
             parts.append(f"hypothesis={hypothesis}")
         if isinstance(master_hash, str) and master_hash:
@@ -749,15 +722,15 @@ def build_job_labels(mode: str, context: dict[str, object] | None = None) -> lis
     master_hash = ctx.get("master_hash")
     if isinstance(master_hash, str) and master_hash:
         labels.append(f"master={master_hash[:12]}")
-    bead_id = ctx.get("bead_id")
-    if isinstance(bead_id, str) and bead_id:
-        labels.append(f"bead={bead_id}")
-    polecat = ctx.get("polecat")
-    if isinstance(polecat, str) and polecat:
-        labels.append(f"polecat={slugify_label_value(polecat)}")
-    hypothesis = ctx.get("hypothesis")
-    if isinstance(hypothesis, str) and hypothesis:
-        labels.append(f"hypothesis={slugify_label_value(hypothesis)}")
+    for context_key, label_key in (
+        ("campaign", "campaign"),
+        ("experiment_id", "experiment"),
+        ("worker_id", "worker"),
+        ("hypothesis", "hypothesis"),
+    ):
+        value = label_value(ctx, context_key)
+        if value:
+            labels.append(f"{label_key}={value}")
     return labels
 
 
@@ -823,10 +796,11 @@ def launch_job(args: argparse.Namespace) -> int:
 
     context = collect_launch_context()
     preflight_report: dict[str, object] | None = None
-    if args.mode == "prepare" and context.get("bead_id") and not args.allow_bead_prepare:
+    scoped_prepare_keys = [key for key in ("campaign", "experiment_id", "worker_id", "hypothesis") if context.get(key)]
+    if args.mode == "prepare" and scoped_prepare_keys and not args.allow_scoped_prepare:
         raise SystemExit(
-            "prepare jobs are rig-wide bootstrap work; do not launch them from a bead branch. "
-            "Run prepare once from the planner workspace, or pass --allow-bead-prepare if you really mean it."
+            "prepare jobs are shared bootstrap work; do not launch them from an experiment-scoped workspace. "
+            "Run prepare once from the parent checkout, or pass --allow-scoped-prepare if you really mean it."
         )
     if args.mode == "experiment":
         preflight_report = build_preflight_report(context, args.namespace)
@@ -928,12 +902,16 @@ def stream_logs(args: argparse.Namespace) -> int:
         argv.extend(["--namespace", args.namespace])
     argv.append(job_id)
 
-    output_handle = None
+    output_handles = []
     collected: list[str] = []
     try:
+        local_log_path = HF_JOB_LOG_DIR / f"{job_id}.log"
+        local_log_path.parent.mkdir(parents=True, exist_ok=True)
+        output_handles.append(local_log_path.open("w", encoding="utf-8"))
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
-            output_handle = args.output.open("w", encoding="utf-8")
+            if args.output.resolve() != local_log_path.resolve():
+                output_handles.append(args.output.open("w", encoding="utf-8"))
         proc = subprocess.Popen(
             argv,
             env={**os.environ, "HF_HUB_DISABLE_EXPERIMENTAL_WARNING": "1"},
@@ -946,14 +924,29 @@ def stream_logs(args: argparse.Namespace) -> int:
         for line in proc.stdout:
             sys.stdout.write(line)
             collected.append(line)
-            if output_handle is not None:
+            for output_handle in output_handles:
                 output_handle.write(line)
         rc = proc.wait()
     finally:
-        if output_handle is not None:
+        for output_handle in output_handles:
             output_handle.close()
 
     metrics = parse_metrics("".join(collected))
+    state = load_json_file(HF_JOB_STATE_DIR / f"{job_id}.json") or {"job_id": job_id}
+    state["cached_log_path"] = str(local_log_path)
+    if args.output:
+        state["output_log_path"] = str(args.output)
+    if metrics is not None:
+        state["metrics"] = metrics
+    persist_job_state(state)
+    last_state = load_json_file(LAST_JOB_PATH)
+    if isinstance(last_state, dict) and last_state.get("job_id") == job_id:
+        last_state["cached_log_path"] = str(local_log_path)
+        if args.output:
+            last_state["output_log_path"] = str(args.output)
+        if metrics is not None:
+            last_state["metrics"] = metrics
+        LAST_JOB_PATH.write_text(json.dumps(last_state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if metrics is not None:
         print(json.dumps({"job_id": job_id, "metrics": metrics}, indent=2, sort_keys=True))
     return rc
@@ -1005,9 +998,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     launch_parser.add_argument("--label", action="append", default=[], help="extra HF Jobs --label entries")
     launch_parser.add_argument("--skip-bucket-create", action="store_true", help="do not create the bucket before launch")
-    launch_parser.add_argument("--allow-duplicate", action="store_true", help="allow launching even if an active experiment already exists for this bead")
+    launch_parser.add_argument(
+        "--allow-duplicate",
+        action="store_true",
+        help="allow launching even if an active experiment already exists for this experiment id",
+    )
     launch_parser.add_argument("--allow-preflight-fail", action="store_true", help="launch even when train.py preflight reports errors")
-    launch_parser.add_argument("--allow-bead-prepare", action="store_true", help="allow a prepare job from a bead worktree (normally blocked)")
+    launch_parser.add_argument(
+        "--allow-scoped-prepare",
+        action="store_true",
+        help="allow a prepare job from an experiment-scoped workspace (normally blocked)",
+    )
+    launch_parser.add_argument("--allow-bead-prepare", action="store_true", dest="allow_scoped_prepare", help=argparse.SUPPRESS)
     launch_parser.set_defaults(detach=True)
     detach_group = launch_parser.add_mutually_exclusive_group()
     detach_group.add_argument("--detach", dest="detach", action="store_true", help="submit in background (default)")

@@ -3,7 +3,6 @@
 Store one markdown file per active or closed research campaign in this
 directory.
 
-Start from `claude/templates/campaign.md` when using the Claude Code workflow,
-or `codex/templates/campaign.md` when using the older Codex flow. Keep the
-theme narrow, and pause a campaign when master changes or the branch of inquiry
-is exhausted.
+Start from `research/templates/campaign.md`. Keep the theme narrow, and pause a
+campaign when the local promoted master changes or the branch of inquiry is
+exhausted.

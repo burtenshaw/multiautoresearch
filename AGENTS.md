@@ -1,25 +1,40 @@
 # Agent Instructions
 
-This repo is a live autolab experiment repo.
+This repo is a live Autolab experiment repo with a local promoted master.
 
 ## Goal
 
-Lower `val_bpb` on the autolab benchmark with disciplined, comparable
-single-change experiments.
+Lower `val_bpb` on the benchmark with disciplined, comparable single-change
+experiments.
 
 ## Hard Rules
 
 - Edit `train.py` only unless the task explicitly says otherwise.
 - Never modify `prepare.py`.
-- Start from current hub master, not stale local history.
-- Treat `python3 scripts/refresh_master.py --fetch-dag`, `research/live/master.json`,
-  and `train_orig.py` as the benchmark-master source of truth.
+- Start from the current local promoted master, not stale local history.
+- Treat `uv run scripts/refresh_master.py --fetch-dag`,
+  `research/live/master.json`, `research/results.tsv`, and `train_orig.py` as
+  the benchmark source of truth.
 - Do not use repo git history such as `main` or `origin/main` to decide whether
-  an experiment is fresh; this repository also carries rig/control-plane commits.
+  an experiment is fresh; this repository also carries control-plane commits.
 - Make exactly one hypothesis change per run.
 - Run the timed benchmark before claiming success.
-- Submit only if local `val_bpb` beats current master.
-- Keep machine-local compatibility shims out of submitted diffs.
+- Record every completed run with `uv run scripts/submit_patch.py --comment "..."`
+- Promotion is local and only happens when local `val_bpb` beats current
+  master.
+- Keep machine-local compatibility shims out of promoted diffs.
+
+## OpenCode Control Plane
+
+- Repo-scoped OpenCode config lives in `opencode.json`.
+- Custom repo agents live in `.opencode/agent/`.
+- Shared repo skills live in `.agents/skills/`.
+- `planner`, `reviewer`, `researcher`, and `reporter` stay read-only.
+- `memory-keeper` is the only writer in the main checkout and owns durable
+  markdown updates under `research/`.
+- `experiment-worker` is the only code-mutating agent and must run in an
+  isolated git worktree created through `uv run scripts/opencode_worker.py create`.
+- Active `experiment-worker` count must never exceed real GPU capacity.
 
 ## Managed Runner
 
@@ -29,82 +44,81 @@ host.
 One-time bootstrap:
 - `hf auth whoami`
 - `hf buckets create "$AUTOLAB_HF_BUCKET" --private --exist-ok`
-- `python3 scripts/hf_job.py launch --mode prepare`
+- `uv run scripts/hf_job.py launch --mode prepare`
 
 Per experiment:
-- `python3 scripts/hf_job.py launch --mode experiment`
+- `uv run scripts/hf_job.py launch --mode experiment`
 - note the job id from the output
-- `python3 scripts/hf_job.py logs <JOB_ID> --follow --output /tmp/autolab-run.log`
-- `python3 scripts/parse_metric.py /tmp/autolab-run.log`
+- `uv run scripts/hf_job.py logs <JOB_ID> --follow --output /tmp/autolab-run.log`
+- `uv run scripts/parse_metric.py /tmp/autolab-run.log`
+- `uv run scripts/submit_patch.py --comment "..."`
 
 ## Standard Workflow
 
-1. Refresh from the hub:
-   - `python3 scripts/refresh_master.py --fetch-dag`
-   - this rewrite of `train.py` and `train_orig.py` defines the benchmark base
+1. Refresh from the local promoted master:
+   - `uv run scripts/refresh_master.py --fetch-dag`
+   - this rewrites `train.py`, `train_orig.py`, and the live local snapshots
 2. Edit `train.py`.
 3. Launch one managed benchmark job:
-   - `python3 scripts/hf_job.py launch --mode experiment`
-   - `python3 scripts/hf_job.py logs <JOB_ID> --follow --output /tmp/autolab-run.log`
+   - `uv run scripts/hf_job.py launch --mode experiment`
+   - `uv run scripts/hf_job.py logs <JOB_ID> --follow --output /tmp/autolab-run.log`
 4. Parse the result:
-   - `python3 scripts/parse_metric.py /tmp/autolab-run.log`
+   - `uv run scripts/parse_metric.py /tmp/autolab-run.log`
 5. Record the hypothesis and outcome in `research/notes.md`.
-6. Submit if improved:
-   - `python3 scripts/submit_patch.py --comment "..."`
+6. Record the run locally:
+   - `uv run scripts/submit_patch.py --comment "..."`
 
-## Codex Subagents
+## Parent Session Workflow
 
-- Repo-scoped Codex config lives in `.codex/`.
-- Custom planner, worker, reviewer, and memory agents live in `.codex/agents/`.
-- Durable Codex-native workflow docs and templates live in `codex/` plus
-  `research/campaigns/`, `research/experiments/`, and
-  `research/do-not-repeat.md`.
-- Active `experiment_worker` count must never exceed real GPU capacity.
-- Planner and reviewer agents should stay read-only; experiment workers own the
-  benchmark run.
-
-## Claude Code Subagents
-
-- Project memory entrypoint lives in `CLAUDE.md`.
-- Repo-scoped Claude settings and custom agents live in `.claude/`.
-- Durable Claude-native workflow docs and templates live in `claude/` plus
-  `research/campaigns/`, `research/experiments/`, and
-  `research/do-not-repeat.md`.
-- Active `experiment-worker` count must never exceed real GPU capacity.
-- Planner and reviewer should stay read-only; experiment workers run in
-  isolated worktrees and own the benchmark run.
-- Persist worker results back into the shared notebook with `memory-keeper` in
-  the main checkout.
+1. Refresh current local master:
+   - `uv run scripts/refresh_master.py --fetch-dag`
+2. Review the notebook:
+   - `research/notes.md`
+   - `research/do-not-repeat.md`
+   - `research/campaigns/`
+   - `research/experiments/`
+3. Start OpenCode in the repo root:
+   - `uv run scripts/print_opencode_kickoff.py --gpu-slots 1`
+   - `opencode`
+4. Use the `autolab` primary agent to plan and review work.
+5. Create isolated workers with:
+   - `uv run scripts/opencode_worker.py create <experiment-id> --campaign ... --hypothesis ...`
+6. Run isolated workers with:
+   - `uv run scripts/opencode_worker.py run <experiment-id>`
+7. Persist durable notes with `memory-keeper`, then clean up finished worktrees.
 
 ## Repo Layout
 
 - Root benchmark files are the experiment surface.
-- `CLAUDE.md` is the Claude Code project-memory entrypoint.
+- `program.md` is the upstream-compatible benchmark entrypoint note.
+- `opencode.json` is the repo-scoped OpenCode config.
+- `.opencode/agent/` contains the repo-scoped OpenCode agents.
+- `.agents/skills/` contains repo-local shared skills.
+- `research/results.tsv` is the append-only local run ledger.
+- `research/live/` contains the current local promoted master and DAG.
 - `research/` is the durable experiment notebook.
-- `gastown/` contains the rig assets that should be installed into a live
-  `~/gt/<rig>/` container with `scripts/install-rig-assets.sh`.
-- `.codex/` contains repo-scoped Codex configuration and custom subagents.
-- `codex/` contains templates and operator docs for Codex-native orchestration.
-- `.claude/` contains repo-scoped Claude Code settings and custom subagents.
-- `claude/` contains templates and operator docs for Claude Code orchestration.
+- `research/templates/` contains the canonical campaign, experiment, and
+  do-not-repeat templates.
+- `.runtime/worktrees/` is the local home for isolated experiment worktrees.
 
 ## Literature Scouting
 
 When the task is planner or literature research rather than a timed benchmark
 run:
 
-- You may edit `research/*.md`, `gastown/`, and operator docs.
+- You may edit `research/*.md` and operator docs.
 - Use the local `hf-cli` skill plus Hugging Face paper search and read tooling
   to find relevant work.
 - Translate papers into single-change `train.py` hypotheses that can be tested
   cleanly.
 - Record paper-derived ideas in `research/paper-ideas.md`.
-- Do not claim a win or submit a patch without a benchmark run.
+- Do not claim a win or promote locally without a benchmark run.
 
 ## Local Skills
 
 - `autolab-managed-experiment`
-  Use for any bead that should become exactly one managed HF Jobs experiment.
+  Use for any single planned experiment that should become exactly one managed
+  HF Jobs run.
 - `autolab-reporter`
   Use for Trackio, active-job review, anomaly review, and experiment-board
   summaries.

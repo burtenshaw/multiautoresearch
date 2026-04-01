@@ -1,5 +1,9 @@
 # Experiment: <short title>
 
+## Campaign
+
+- Campaign: `<theme>`
+
 ## Hypothesis
 
 <One sentence. What single change do you expect to help, and why?>
@@ -8,7 +12,8 @@
 
 - Parent master hash: `<hash>`
 - Master val_bpb at dispatch: `<value>`
-- Campaign: `<theme>`
+- Worker id: `<worker-id>`
+- Worktree: `<worktree-path>`
 
 ## Single Variable
 
@@ -22,21 +27,29 @@
 
 <Why this is not a duplicate of an open or recent experiment>
 
+## Runtime
+
+- Log path: `<log-path>`
+- Launcher: `uv run scripts/opencode_worker.py run <experiment-id>`
+
 ## Allowed Edit Scope
 
 - `train.py` only
 
 ## Run Plan
 
-- Refresh master with `python3 scripts/refresh_master.py --fetch-dag`
-- Log path: `research/live/<experiment-id>.log`
-- Run `CUDA_VISIBLE_DEVICES=<gpu> ./run-local.sh research/live/<experiment-id>.log`
-- Parse `python3 scripts/parse_metric.py research/live/<experiment-id>.log`
+- Refresh local master with `uv run scripts/refresh_master.py --fetch-dag`
+- Run `uv run scripts/hf_job.py preflight`
+- Run `uv run scripts/hf_job.py launch --mode experiment`
+- Stream logs to the reserved path
+- Parse `uv run scripts/parse_metric.py <log-path>`
+- Record the run with `uv run scripts/submit_patch.py --comment "..."`
 
 ## Result
 
 - Local val_bpb: `<value>`
-- Submitted: `yes|no`
+- Recorded locally: `yes|no`
+- Promoted locally: `yes|no`
 - Interpretation: `<one or two sentences>`
 - Failure mode, if any: `<brief note>`
 

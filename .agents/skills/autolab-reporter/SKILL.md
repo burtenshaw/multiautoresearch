@@ -7,7 +7,7 @@ Use this for the control-plane view of the experiment fleet.
 
 ## Workflow
 
-1. Load credentials:
+1. Load the local operator env:
    - `. ~/.autolab/credentials`
 2. Sync the latest HF Jobs into Trackio:
    - `uv run scripts/trackio_reporter.py sync --project autolab`
@@ -21,10 +21,10 @@ Use this for the control-plane view of the experiment fleet.
 ## What To Watch
 
 - active experiment jobs versus non-experiment jobs
-- duplicate active jobs for the same bead or hypothesis
-- per-bead `prepare` jobs, which usually indicate wasted bootstrap work
-- worker nudges, escalations, and session deaths from `~/gt/.events.jsonl`
-- leaderboard entries that actually beat current hub master
+- duplicate active jobs for the same experiment or hypothesis
+- `prepare` jobs that still carry experiment labels, which usually indicate
+  wasted bootstrap work
+- leaderboard entries that actually beat the current local promoted master
 
 ## Guardrails
 

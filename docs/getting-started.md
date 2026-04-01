@@ -1,15 +1,15 @@
 # Getting Started
 
-This repo is a public operator checkout for Autolab. It assumes a hosted
-Autolab backend plus Hugging Face Jobs access.
+This repo is a self-contained Autolab operator checkout. It uses a local
+promoted master plus Hugging Face Jobs and Trackio.
 
 ## Prerequisites
 
 - Python 3.10 or newer
 - `uv`
 - `hf` CLI
+- `opencode`
 - a Hugging Face account with Jobs access
-- an Autolab account, API endpoint, and API key
 
 ## 1. Clone And Install
 
@@ -19,7 +19,7 @@ cd <repo-dir>
 uv sync
 ```
 
-## 2. Create Local Credentials
+## 2. Create Local Operator Env
 
 ```bash
 mkdir -p ~/.autolab
@@ -28,9 +28,9 @@ $EDITOR ~/.autolab/credentials
 . ~/.autolab/credentials
 ```
 
-The credentials file stays in your home directory, not in the repo.
+The env file stays in your home directory, not in the repo.
 
-## 3. Validate Your Operator Setup
+## 3. Validate Your Setup
 
 ```bash
 bash scripts/bootstrap_public.sh
@@ -41,24 +41,27 @@ This checks:
 - `python3`, `uv`, and `hf`
 - Python version compatibility
 - local Hugging Face auth with `hf auth whoami`
-- required Autolab and HF environment variables
+- `AUTOLAB_HF_BUCKET`
 - shared HF cache bucket creation
 
 It prints the next commands without starting paid jobs.
 
-## 4. Warm The Shared HF Cache Once
+## 4. Authenticate Hugging Face And Bootstrap Shared Cache
 
 ```bash
-python3 scripts/hf_job.py launch --mode prepare
+hf auth login
+hf auth whoami
+hf buckets create "$AUTOLAB_HF_BUCKET" --private --exist-ok
+uv run scripts/hf_job.py launch --mode prepare
 ```
 
 This prime step keeps tokenizer and data bootstrap out of your paid experiment
 loop.
 
-## 5. Refresh To Current Benchmark Master
+## 5. Refresh To Current Local Master
 
 ```bash
-python3 scripts/refresh_master.py --fetch-dag
+uv run scripts/refresh_master.py --fetch-dag
 ```
 
 This rewrites:
@@ -69,17 +72,42 @@ This rewrites:
 - `research/live/master_detail.json`
 - `research/live/dag.json`
 
-Do not use repo git history as benchmark truth. Use the refreshed files above.
+Do not use repo git history as benchmark truth. Use the refreshed files above
+plus `research/results.tsv`.
 
-## 6. Run One Managed Experiment
-
-Edit `train.py`, then run:
+## 6. Authenticate OpenCode And Choose A Model
 
 ```bash
-python3 scripts/hf_job.py preflight
-python3 scripts/hf_job.py launch --mode experiment
-python3 scripts/hf_job.py logs <JOB_ID> --follow --output /tmp/autolab-run.log
-python3 scripts/parse_metric.py /tmp/autolab-run.log
+opencode auth login
+opencode
+# inside OpenCode:
+/models
+```
+
+Choose Hugging Face and an open model through Hugging Face Inference Providers.
+Do not pin a single exact model id in repo config.
+
+## 7. Start The Parent Session
+
+```bash
+uv run scripts/print_opencode_kickoff.py --gpu-slots 1
+opencode
+```
+
+Use the `autolab` primary agent from the repo root. For the full parent and
+worker flow, continue with [opencode-workflow.md](opencode-workflow.md).
+
+## 8. Run One Managed Experiment
+
+Edit `train.py`, or launch an isolated worker with
+`uv run scripts/opencode_worker.py create ...` and
+`uv run scripts/opencode_worker.py run ...`, then run:
+
+```bash
+uv run scripts/hf_job.py preflight
+uv run scripts/hf_job.py launch --mode experiment
+uv run scripts/hf_job.py logs <JOB_ID> --follow --output /tmp/autolab-run.log
+uv run scripts/parse_metric.py /tmp/autolab-run.log
 ```
 
 Rules:
@@ -88,15 +116,18 @@ Rules:
 - `train.py` only unless explicitly authorized otherwise
 - do not modify `prepare.py`
 
-## 7. Submit If You Win
+## 9. Record The Run Locally
 
-If the observed `val_bpb` beats current master:
+Every completed run should be appended to the local ledger:
 
 ```bash
-python3 scripts/submit_patch.py --comment "one-sentence hypothesis and observed val_bpb"
+uv run scripts/submit_patch.py --comment "one-sentence hypothesis and observed val_bpb"
 ```
 
-## 8. Optional: Local Trackio Dashboard
+This always records the run in `research/results.tsv`. It promotes the local
+master only when the observed `val_bpb` beats current master.
+
+## 10. Optional: Local Trackio Dashboard
 
 ```bash
 uv run scripts/trackio_reporter.py sync --project "${AUTOLAB_TRACKIO_PROJECT:-autolab}"
@@ -108,16 +139,3 @@ Use the reporter summary before launching more work:
 ```bash
 uv run scripts/trackio_reporter.py summary --max-jobs 25
 ```
-
-## 9. Optional: Gas Town Mode
-
-If you want planner, polecat, researcher, and reporter workers:
-
-```bash
-gt rig add autolab <repo-url>
-./scripts/install-rig-assets.sh ~/gt/autolab
-./scripts/install-rig-assets.sh --check ~/gt/autolab
-```
-
-Then continue with [gastown.md](gastown.md) and the more detailed
-[gastown-codex-guide.md](gastown-codex-guide.md).

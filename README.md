@@ -1,237 +1,147 @@
-# autolab-rig
+# open lab
 
-Concrete repository for running autolab with Gas Town, Codex, or Claude Code
-subagents.
+This repo is a self-contained Open Source AI Lab.
 
-This repo does **not** bundle the Autolab backend itself. You need access to a
-hosted Autolab service plus Hugging Face Jobs.
+There is no hosted benchmark backend in the active workflow. The current local
+benchmark truth is:
 
-- the live benchmark harness at repo root
-- local research notes and seeded hub snapshots under `research/`
-- Gas Town rig assets under `gastown/`
-- Codex subagent configs and templates under `.codex/` and `codex/`
-- Claude Code project memory, settings, and templates under `CLAUDE.md`,
-  `.claude/`, and `claude/`
+- `train_orig.py`
+- `research/live/master.json`
+- `research/results.tsv`
 
-It is intentionally separate from the Gas Town source repo. Keep reusable
-orchestration code in `autoresearch-gastown`. Keep live autolab work here.
+OpenCode is the primary way to use this repo. The checked-in agents and
+[`AGENTS.md`](/Users/ben/code/open-autolab/AGENTS.md) tell the agent which
+scripts to run and how to use them safely.
 
-## Layout
+## What This Repo Contains
 
 - `train.py`
-  Working experiment file. This is the only file most experiments should edit.
-- `train_orig.py`
-  Local copy of the current hub master used as the diff base.
+  The working experiment surface.
 - `prepare.py`
   Read-only benchmark setup and evaluation logic.
-- `run-local.sh`
-  Canonical timed local run wrapper.
-- `sitecustomize.py`
-  Machine-local compatibility shim for local runs. Keep local hacks here, not in
-  submitted diffs.
-- `CLAUDE.md`
-  Claude Code project-memory entrypoint. It imports the repo's shared
-  instructions and Claude-specific workflow guide.
-- `scripts/refresh_master.py`
-  Refresh `train.py`, `train_orig.py`, and live hub snapshots from the autolab
-  API.
-- `scripts/submit_patch.py`
-  Generate a unified diff and submit it to the autolab API.
-- `scripts/parse_metric.py`
-  Parse the final metric block from a local run log.
-- `scripts/install-rig-assets.sh`
-  Copy the checked-in Gas Town rig assets into a live `~/gt/<rig>/` layout.
-- `gastown/`
-  Rig directives, overlays, templates, and operating docs for the live Gas Town
-  rig.
-- `.codex/`
-  Repo-scoped Codex configuration plus custom planner/worker/reviewer agents.
-- `codex/`
-  Templates and guides for the Codex-native research workflow.
-- `.claude/`
-  Repo-scoped Claude Code settings plus custom planner/worker/reviewer agents.
-- `claude/`
-  Templates and guides for the Claude Code-native research workflow.
+- `research/results.tsv`
+  Append-only local run ledger.
+- `research/live/`
+  The current promoted local master snapshot and DAG.
 - `research/`
-  Seed snapshots, local notes, archived diffs, and git-tracked experiment memory.
+  Notes, campaign state, experiment records, and templates.
+- `.opencode/agent/`
+  The checked-in OpenCode agents: `autolab`, `planner`, `experiment-worker`,
+  `reviewer`, `memory-keeper`, `researcher`, and `reporter`.
+- `.agents/skills/`
+  Shared repo-local skills.
 
-## Quick Start
+## Local Setup
 
-This is the canonical setup path for the repo.
-
-### 1. Clone And Install
+Install the repo and create your local operator env:
 
 ```bash
-git clone https://github.com/burtenshaw/autolab-gastown.git
-cd autolab-gastown
 uv sync
-```
-
-### 2. Create Local Credentials
-
-```bash
-mkdir -p ~/.autolab
-cp .autolab.credentials.example ~/.autolab/credentials
-$EDITOR ~/.autolab/credentials
-```
-
-Your credentials file stays in your home directory, not in the repo.
-
-### 3. Log In To Hugging Face Once
-
-```bash
 hf auth login
+hf auth whoami
+opencode auth login
 ```
 
-### 4. Validate Your Setup
+If you have not warmed the shared Hugging Face cache yet, you can ask OpenCode
+to do that as part of the first session. The exact script path is already in
+[`AGENTS.md`](/Users/ben/code/open-autolab/AGENTS.md).
+
+## Start OpenCode
+
+From the repo root:
+
+```bash
+opencode
+```
+
+Use the `autolab` primary agent. The normal pattern is:
+
+1. Open OpenCode in the repo root.
+2. Give the `autolab` agent a short goal.
+3. Let the repo agents and `AGENTS.md` drive the scripts.
+
+You do not need to memorize the benchmark commands from the README.
+
+## Simple Prompts
+
+Use prompts like these with the `autolab` agent:
+
+- `Refresh the local promoted master, review the notebook, and propose up to 3 fresh single-change experiments.`
+- `Check whether the shared HF cache is ready. If not, run the one-time prepare path, then refresh local master.`
+- `Create one isolated worker for a warmdown-ratio experiment, launch it, and tell me the experiment id, job id, and log path.`
+- `Review the current reporter state and tell me whether any active experiments are duplicated or stale.`
+- `Take the latest completed run, record it locally, tell me whether it promoted, and draft the note for memory-keeper.`
+- `Compare this repo's upstream-tracked files against karpathy/autoresearch and summarize the diffs without applying them.`
+
+If you want a longer parent-session kickoff prompt, run:
+
+```bash
+uv run scripts/print_opencode_kickoff.py --gpu-slots 1
+```
+
+## Autonomous Run Example
+
+One concrete way to send off an autonomous local autoresearch session is:
+
+1. Make sure your local env is loaded and the shared Hugging Face bucket exists:
 
 ```bash
 . ~/.autolab/credentials
-bash scripts/bootstrap_public.sh
+hf buckets create "$AUTOLAB_HF_BUCKET" --private --exist-ok
+opencode
 ```
 
-This verifies:
+2. In OpenCode, use the `autolab` primary agent with a prompt like:
 
-- `python3`, `uv`, and `hf`
-- your local Hugging Face login
-- required Autolab and HF environment variables
-- shared HF bucket access
+```text
+Run one autonomous local autoresearch pass in this repo using the repo-defined roles.
 
-If this step fails, start with [docs/troubleshooting.md](docs/troubleshooting.md).
+Use planner to propose up to 2 fresh single-change experiments against the current local promoted master.
+Use reviewer to reject duplicates or stale ideas before any paid run starts.
+If the shared HF cache is not ready, run the one-time prepare path using the configured HF bucket.
+Then refresh the local promoted master.
 
-### 5. Create The Gas Town Rig
+For the best approved experiment, create one isolated experiment-worker worktree and launch it through Hugging Face Jobs.
+Use HF Jobs for the benchmark run, the shared HF bucket for cache/data mounting, and the reserved experiment log path.
+When the run finishes, parse the metric, record it locally, tell me whether it promoted, and hand the durable note text to memory-keeper.
+Use reporter at the end to summarize active jobs, anomalies, and the current leader.
 
-```bash
-gt rig add autolab https://github.com/burtenshaw/autolab-gastown.git
-./scripts/install-rig-assets.sh ~/gt/autolab
-./scripts/install-rig-assets.sh --check ~/gt/autolab
+Use as many concurrent experiment-workers as possible.
+Do not stop until all you have completed a full pass of successful experiments.
 ```
 
-### 6. Add The Control-Plane Workers
+That prompt is enough for the checked-in agents plus
+[`AGENTS.md`](/Users/ben/code/open-autolab/AGENTS.md) to route the work through
+the repo scripts, HF Jobs, HF buckets, and the local results ledger.
 
-```bash
-cd ~/gt/autolab
-gt crew add researcher --rig autolab
-gt crew add reporter --rig autolab
-```
+## Operating Model
 
-### 7. Warm The Shared Cache And Refresh Master
-
-```bash
-cd ~/gt/autolab/crew/planner
-. ~/.autolab/credentials
-python3 scripts/hf_job.py launch --mode prepare
-python3 scripts/refresh_master.py --fetch-dag
-```
-
-This rewrites `train.py`, `train_orig.py`, and `research/live/*`. Treat those
-files as the benchmark source of truth. Do **not** use repo git history such as
-`main` or `origin/main` as benchmark truth.
-
-### 8. Create And Dispatch Your First Bead
-
-```bash
-bd create --title "optimizer: first autolab experiment" --type=task --priority=1
-# note the bead id from the output, then:
-gt convoy create "optimizer: first autolab run" <BEAD_ID>
-gt sling <BEAD_ID> autolab --agent codex
-```
-
-At that point the planner and polecats own the benchmark loop. For the full
-role split and daily workflow, continue with [docs/gastown.md](docs/gastown.md),
-[docs/gastown-investigation.md](docs/gastown-investigation.md), and
-[docs/gastown-codex-guide.md](docs/gastown-codex-guide.md).
-
-## First Run Rules
-
-- Refresh from hosted master before every fresh experiment.
-- Use `train.py`, `train_orig.py`, and `research/live/master.json` as benchmark
-  truth.
+- Refresh from the current local promoted master before a fresh experiment.
+- Edit `train.py` only unless the task explicitly says otherwise.
+- Never modify `prepare.py`.
 - Make exactly one hypothesis change per run.
-- Do not modify `prepare.py`.
-- Submit only if observed `val_bpb` beats current master.
+- Record every completed run in `research/results.tsv`.
+- Local promotion only happens when observed `val_bpb` beats current master.
 
-## Optional: Local Trackio Dashboard
+## Where To Look Next
 
-```bash
-uv run scripts/trackio_reporter.py sync --project "${AUTOLAB_TRACKIO_PROJECT:-autolab}"
-uv run scripts/trackio_reporter.py dashboard --project "${AUTOLAB_TRACKIO_PROJECT:-autolab}" --mcp-server --no-footer
-```
-
-## Script-Only Path
-
-If you want to use the benchmark scripts directly without Gas Town, see
-[docs/getting-started.md](docs/getting-started.md).
-
-## Stable Public Entrypoints
-
-These scripts are the operator-facing interface of the repo:
-
-## Codex Subagents Setup
-
-Codex can run this repo directly from the project root using the checked-in
-project config and custom agents:
-
-```bash
-python3 scripts/print_codex_kickoff.py --gpu-slots 1
-codex
-```
-
-The Codex-native workflow is documented in `docs/codex-subagents-guide.md`.
-Unlike the Gas Town flow, there is no separate rig-install step: Codex reads the
-repo-local `.codex/` config in place.
-
-## Claude Code Subagents Setup
-
-Claude Code can run this repo directly from the project root using `CLAUDE.md`,
-the checked-in `.claude/agents/`, and the repo-scoped settings file:
-
-```bash
-python3 scripts/print_claude_kickoff.py --gpu-slots 1
-claude
-```
-
-The Claude-native workflow is documented in `docs/claude-subagents-guide.md`.
-The checked-in `experiment-worker` agent runs as a background task in its own
-worktree so parallel workers do not collide on checkout state. For multiple
-top-level Claude sessions, use `claude --worktree <name>`. After each worker
-finishes, use `memory-keeper` in the main checkout to persist the result into
-the shared research notebook.
-
-## Push Policy
-
-See [docs/script-reference.md](docs/script-reference.md) for inputs,
-environment variables, outputs, and external dependencies.
+- [`AGENTS.md`](/Users/ben/code/open-autolab/AGENTS.md)
+  Repo rules and the agent operating contract.
+- [docs/opencode-workflow.md](/Users/ben/code/open-autolab/docs/opencode-workflow.md)
+  Full parent-session and worker workflow.
+- [docs/script-reference.md](/Users/ben/code/open-autolab/docs/script-reference.md)
+  Direct script interfaces, if you need them.
+- [docs/getting-started.md](/Users/ben/code/open-autolab/docs/getting-started.md)
+  More detailed local setup notes.
+- [docs/troubleshooting.md](/Users/ben/code/open-autolab/docs/troubleshooting.md)
+  Common local operator issues.
 
 ## Contribution Model
 
-- Repo changes such as docs, helper scripts, and rig assets belong in git
-  history here.
-- Winning `train.py` diffs belong in the hosted Autolab submission system via
-  `scripts/submit_patch.py`.
-- Failed experiment history belongs in `research/notes.md`, Trackio, or Gas
-  Town beads, not as a long tail of repo commits.
-
-- current benchmark files at repo root
-- seed hub snapshots in `research/reference/`
-- experiment notes in `research/notes.md`
-- archived failed diff in `research/diffs/batch96.diff`
-- Gas Town autolab scaffold in `gastown/`
-- Codex repo-native scaffold in `.codex/` and `codex/`
-- Claude Code repo-native scaffold in `CLAUDE.md`, `.claude/`, and `claude/`
-
-- [docs/getting-started.md](docs/getting-started.md)
-- [docs/hosted-backend.md](docs/hosted-backend.md)
-- [docs/script-reference.md](docs/script-reference.md)
-- [docs/gastown.md](docs/gastown.md)
-- [docs/gastown-investigation.md](docs/gastown-investigation.md)
-- [docs/troubleshooting.md](docs/troubleshooting.md)
-- [docs/gastown-codex-guide.md](docs/gastown-codex-guide.md)
-
-- `docs/gastown-codex-guide.md`
-- `docs/codex-subagents-guide.md`
-- `docs/claude-subagents-guide.md`
-- `gastown/day-1-checklist.md`
-- `gastown/templates/experiment-bead.md`
-- `codex/templates/experiment-task.md`
-- `claude/templates/experiment-task.md`
+- Tooling, docs, templates, and control-plane changes belong in git history
+  here.
+- Benchmark runs are recorded locally in `research/results.tsv`.
+- Current-master promotions happen locally from recorded winning runs.
+- Failed experiment history belongs in `research/notes.md`,
+  `research/do-not-repeat.md`, `research/experiments/`, and Trackio, not as a
+  long tail of benchmark commits.

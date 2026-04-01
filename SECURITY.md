@@ -4,10 +4,9 @@
 
 Keep all credentials out of the repository.
 
-- Store Autolab credentials in `~/.autolab/credentials`.
+- Store local operator env settings in `~/.autolab/credentials`.
 - Authenticate the Hugging Face CLI out of band with `hf auth login`.
-- Treat `AUTOLAB_KEY`, `HF_TOKEN`, and any private Autolab endpoint details as
-  secrets.
+- Treat `HF_TOKEN` and any private infrastructure details as secrets.
 
 Do not paste secrets into:
 
@@ -23,21 +22,18 @@ These paths are local operator state and should not be committed:
 
 - `~/.autolab/credentials`
 - `.runtime/`
-- `.beads/`
-- `.logs/`
-- `.codex/`
 
-`research/live/*` is generated benchmark state fetched from the hosted backend.
-Treat it as disposable cache and regenerate it with
-`python3 scripts/refresh_master.py --fetch-dag`.
+`research/live/master.json`, `research/live/master_detail.json`, and
+`research/live/dag.json` are tracked repo state for the current promoted local
+master. Regenerate them with `uv run scripts/refresh_master.py --fetch-dag` if
+needed.
 
 ## Reporting A Security Issue
 
-If the issue involves credentials, private endpoints, or backend access control:
+If the issue involves credentials or private infrastructure access:
 
 - do not open a public issue with the full details
-- use the same private channel you used to obtain Autolab access, or contact
-  the maintainers directly
+- contact the maintainers directly through a private channel
 
 If you accidentally exposed a token:
 

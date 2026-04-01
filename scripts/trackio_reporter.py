@@ -16,7 +16,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -47,23 +47,11 @@ STEP_RE = re.compile(
     r"remaining:\s+(?P<remaining_seconds>[0-9.]+)s"
 )
 
-
-def infer_rig_root() -> Path:
-    for candidate in (ROOT, *ROOT.parents):
-        if (candidate / "crew").exists() and (candidate / "polecats").exists():
-            return candidate
-    fallback = Path.home() / "gt" / "autolab"
-    return fallback if fallback.exists() else ROOT
-
-
-RIG_ROOT = infer_rig_root()
-TOWN_ROOT = RIG_ROOT.parent
-GLOBAL_RUNTIME_DIR = RIG_ROOT / ".runtime"
+GLOBAL_RUNTIME_DIR = ROOT / ".runtime"
 STATE_PATH = GLOBAL_RUNTIME_DIR / "trackio-reporter-state.json"
 SNAPSHOT_PATH = GLOBAL_RUNTIME_DIR / "trackio-latest.json"
 MARKDOWN_PATH = GLOBAL_RUNTIME_DIR / "trackio-report.md"
 JOBS_CACHE_PATH = GLOBAL_RUNTIME_DIR / "hf-jobs-cache.json"
-EVENTS_PATH = TOWN_ROOT / ".events.jsonl"
 
 
 def resolve_hf_cli() -> str:
@@ -198,53 +186,11 @@ def save_jobs_cache(jobs: list[dict[str, Any]]) -> None:
     JOBS_CACHE_PATH.write_text(json.dumps(jobs, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def load_recent_events(limit: int = 12, scan_lines: int = 4000, max_age_hours: int = 6) -> list[dict[str, Any]]:
-    if not EVENTS_PATH.exists():
-        return []
-    try:
-        lines = EVENTS_PATH.read_text(encoding="utf-8").splitlines()[-scan_lines:]
-    except OSError:
-        return []
-
-    interesting_types = {"nudge", "escalation_sent", "session_death"}
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
-    events: list[dict[str, Any]] = []
-    for line in lines:
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(payload, dict):
-            continue
-        ts = payload.get("ts")
-        if isinstance(ts, str):
-            try:
-                event_time = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            except ValueError:
-                event_time = None
-            if event_time is not None and event_time < cutoff:
-                continue
-        event_type = payload.get("type")
-        actor = payload.get("actor")
-        body = payload.get("payload")
-        if event_type not in interesting_types:
-            continue
-        if not (isinstance(actor, str) and actor.startswith("autolab/")):
-            target = body.get("target") if isinstance(body, dict) else None
-            rig = body.get("rig") if isinstance(body, dict) else None
-            if not (isinstance(target, str) and target.startswith("autolab/")) and rig != "autolab":
-                continue
-        events.append(payload)
-    return events[-limit:]
-
-
 def load_registry_entries() -> dict[str, dict[str, Any]]:
     entries: dict[str, dict[str, Any]] = {}
     candidates: list[Path] = []
     candidates.extend(sorted((ROOT / ".runtime" / "hf-jobs").glob("*.json")))
-    candidates.extend(sorted((RIG_ROOT / ".runtime" / "hf-jobs").glob("*.json")))
-    candidates.extend(sorted((RIG_ROOT / "crew").glob("*/.runtime/hf-jobs/*.json")))
-    candidates.extend(sorted((RIG_ROOT / "polecats").glob("*/autolab/.runtime/hf-jobs/*.json")))
+    candidates.extend(sorted((ROOT / ".runtime" / "worktrees").glob("*/.runtime/hf-jobs/*.json")))
     seen: set[Path] = set()
     for path in candidates:
         if path in seen or not path.is_file():
@@ -267,6 +213,9 @@ def load_registry_entries() -> dict[str, dict[str, Any]]:
 
 
 def row_mode(row: dict[str, Any]) -> str | None:
+    mode = row.get("mode")
+    if isinstance(mode, str) and mode:
+        return mode
     labels = row.get("labels")
     if isinstance(labels, dict):
         mode = labels.get("mode")
@@ -275,53 +224,38 @@ def row_mode(row: dict[str, Any]) -> str | None:
     return None
 
 
-def build_anomalies(rows: list[dict[str, Any]], events: list[dict[str, Any]]) -> list[str]:
+def build_anomalies(rows: list[dict[str, Any]]) -> list[str]:
     anomalies: list[str] = []
     active_rows = [row for row in rows if row["stage"] not in TERMINAL_STAGES]
 
-    active_by_bead: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    active_by_experiment: dict[str, list[dict[str, Any]]] = defaultdict(list)
     active_by_hypothesis: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in active_rows:
-        bead_id = row.get("bead_id")
-        if isinstance(bead_id, str) and bead_id:
-            active_by_bead[bead_id].append(row)
+        experiment_id = row.get("experiment_id")
+        if isinstance(experiment_id, str) and experiment_id:
+            active_by_experiment[experiment_id].append(row)
         hypothesis = row.get("hypothesis")
         if isinstance(hypothesis, str) and hypothesis:
             active_by_hypothesis[hypothesis].append(row)
 
         mode = row_mode(row)
-        if mode == "prepare" and bead_id:
-            anomalies.append(f"prepare job launched from bead `{bead_id}`: `{row['job_id']}`")
-        bead_status = row.get("bead_status")
-        if isinstance(bead_status, str) and bead_status.lower() in {"closed", "blocked", "resolved"}:
-            anomalies.append(
-                f"bead `{bead_id or row['job_id']}` is `{bead_status}` but still has active job `{row['job_id']}`"
-            )
+        if mode == "prepare" and isinstance(experiment_id, str) and experiment_id:
+            anomalies.append(f"prepare job launched with experiment label `{experiment_id}`: `{row['job_id']}`")
 
-    for bead_id, bead_rows in active_by_bead.items():
-        active_experiments = [row for row in bead_rows if row_mode(row) == "experiment"]
+    for experiment_id, experiment_rows in active_by_experiment.items():
+        active_experiments = [row for row in experiment_rows if row_mode(row) == "experiment"]
         if len(active_experiments) > 1:
             job_ids = ", ".join(str(row["job_id"]) for row in active_experiments)
-            anomalies.append(f"duplicate active experiments for bead `{bead_id}`: {job_ids}")
+            anomalies.append(f"duplicate active experiments for experiment `{experiment_id}`: {job_ids}")
 
     for hypothesis, hypothesis_rows in active_by_hypothesis.items():
-        unique_beads = {row.get("bead_id") for row in hypothesis_rows if row.get("bead_id")}
         active_experiments = [row for row in hypothesis_rows if row_mode(row) == "experiment"]
-        if len(active_experiments) > 1 and len(unique_beads) > 1:
+        unique_experiments = {
+            str(row.get("experiment_id") or row["job_id"]) for row in active_experiments if row.get("experiment_id") or row.get("job_id")
+        }
+        if len(active_experiments) > 1 and len(unique_experiments) > 1:
             job_ids = ", ".join(str(row["job_id"]) for row in active_experiments)
-            anomalies.append(f"duplicate active hypothesis `{hypothesis}` across beads: {job_ids}")
-
-    for event in events:
-        event_type = event.get("type")
-        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-        if event_type == "escalation_sent":
-            reason = payload.get("reason") or "worker escalation"
-            target = payload.get("target") or event.get("actor")
-            anomalies.append(f"worker escalation from `{target}`: {reason}")
-        elif event_type == "session_death":
-            reason = payload.get("reason") or "session death"
-            actor = event.get("actor")
-            anomalies.append(f"session death for `{actor}`: {reason}")
+            anomalies.append(f"duplicate active hypothesis `{hypothesis}` across experiments: {job_ids}")
 
     seen: set[str] = set()
     unique: list[str] = []
@@ -331,29 +265,6 @@ def build_anomalies(rows: list[dict[str, Any]], events: list[dict[str, Any]]) ->
         seen.add(anomaly)
         unique.append(anomaly)
     return unique
-
-
-def load_bead_details(bead_id: str, cache: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    if bead_id in cache:
-        return cache[bead_id]
-    result = run_command(["bd", "show", "--json", "--long", f"--id={bead_id}"], capture_output=True)
-    if result.returncode != 0 or not result.stdout.strip():
-        cache[bead_id] = {}
-        return cache[bead_id]
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        cache[bead_id] = {}
-        return cache[bead_id]
-    record: dict[str, Any] | None
-    if isinstance(payload, list):
-        record = payload[0] if payload else None
-    elif isinstance(payload, dict):
-        record = payload
-    else:
-        record = None
-    cache[bead_id] = record if isinstance(record, dict) else {}
-    return cache[bead_id]
 
 
 def is_autolab_job(job: dict[str, Any], registry: dict[str, dict[str, Any]]) -> bool:
@@ -423,39 +334,34 @@ def delta_vs_master(val_bpb: object, master_val_bpb: object) -> float | None:
 def build_job_row(
     job: dict[str, Any],
     registry: dict[str, dict[str, Any]],
-    bead_cache: dict[str, dict[str, Any]],
     master: dict[str, Any],
     tail: int,
     namespace: str | None,
 ) -> dict[str, Any]:
     job_id = str(job.get("id"))
     registry_entry = registry.get(job_id, {})
-    labels = job.get("labels") or {}
-    bead_id = None
-    if isinstance(labels, dict):
-        bead_id = labels.get("bead")
-    if not isinstance(bead_id, str) or not bead_id:
-        bead_id = registry_entry.get("bead_id")
-    bead = load_bead_details(bead_id, bead_cache) if isinstance(bead_id, str) and bead_id else {}
+    labels = job.get("labels")
+    if not isinstance(labels, dict):
+        labels = {}
 
     log_text = fetch_job_logs(job_id, tail=tail, namespace=namespace)
     step_metrics = parse_step_metrics(log_text)
     summary = parse_summary_metrics(log_text)
 
-    hypothesis = None
-    polecat = None
-    if isinstance(labels, dict):
-        hypothesis = labels.get("hypothesis")
-        polecat = labels.get("polecat")
-    if not isinstance(hypothesis, str) or not hypothesis:
-        hypothesis = registry_entry.get("hypothesis")
-    if not isinstance(polecat, str) or not polecat:
-        polecat = registry_entry.get("polecat")
+    def label_or_registry(label_key: str, registry_key: str | None = None) -> str | None:
+        label_value = labels.get(label_key)
+        if isinstance(label_value, str) and label_value:
+            return label_value
+        registry_value = registry_entry.get(registry_key or label_key)
+        if isinstance(registry_value, str) and registry_value:
+            return registry_value
+        return None
 
-    master_hash = registry_entry.get("master_hash")
-    if not isinstance(master_hash, str) or not master_hash:
-        if isinstance(labels, dict):
-            master_hash = labels.get("master")
+    campaign = label_or_registry("campaign")
+    experiment_id = label_or_registry("experiment", "experiment_id")
+    worker_id = label_or_registry("worker", "worker_id")
+    hypothesis = label_or_registry("hypothesis")
+    master_hash = label_or_registry("master", "master_hash")
     if not isinstance(master_hash, str) or not master_hash:
         master_hash = master.get("hash")
 
@@ -464,14 +370,12 @@ def build_job_row(
         "stage": job_stage(job),
         "created_at": job.get("created_at"),
         "flavor": job.get("flavor"),
-        "mode": labels.get("mode") if isinstance(labels, dict) else registry_entry.get("mode"),
-        "labels": labels if isinstance(labels, dict) else {},
-        "bead_id": bead_id,
-        "bead_title": bead.get("title") or registry_entry.get("bead_title"),
-        "bead_status": bead.get("status") or registry_entry.get("bead_status"),
-        "assignee": bead.get("assignee") or registry_entry.get("bead_assignee"),
+        "mode": label_or_registry("mode"),
+        "labels": labels,
+        "campaign": campaign,
+        "experiment_id": experiment_id,
+        "worker_id": worker_id,
         "hypothesis": hypothesis,
-        "polecat": polecat,
         "branch": registry_entry.get("branch"),
         "git_commit": registry_entry.get("git_commit"),
         "master_hash": master_hash,
@@ -490,12 +394,10 @@ def build_run_config(row: dict[str, Any]) -> dict[str, Any]:
         "stage": row["stage"],
         "mode": row["mode"],
         "flavor": row["flavor"],
-        "bead_id": row["bead_id"],
-        "bead_title": row["bead_title"],
-        "bead_status": row["bead_status"],
-        "assignee": row["assignee"],
+        "campaign": row["campaign"],
+        "experiment_id": row["experiment_id"],
+        "worker_id": row["worker_id"],
         "hypothesis": row["hypothesis"],
-        "polecat": row["polecat"],
         "branch": row["branch"],
         "git_commit": row["git_commit"],
         "master_hash": row["master_hash"],
@@ -524,7 +426,7 @@ def sync_job_to_trackio(row: dict[str, Any], state: dict[str, Any], project: str
     run = trackio.init(
         project=project,
         name=job_id,
-        group=row.get("bead_id") or "autolab-jobs",
+        group=row.get("experiment_id") or "autolab-jobs",
         config=build_run_config(row),
         resume="allow",
         embed=False,
@@ -555,7 +457,7 @@ def sync_job_to_trackio(row: dict[str, Any], state: dict[str, Any], project: str
         run.log({"job_stage": stage, "is_terminal": 1 if stage in TERMINAL_STAGES else 0}, step=summary_step)
         if stage in TERMINAL_STAGES and stage != "COMPLETED":
             title = f"{job_id} ended in {stage}"
-            text = row.get("bead_title") or row.get("hypothesis") or "autolab job ended unsuccessfully"
+            text = row.get("experiment_id") or row.get("hypothesis") or "autolab job ended unsuccessfully"
             run.alert(title=title, text=text, step=summary_step)
 
     run.finish()
@@ -571,7 +473,7 @@ def sync_job_to_trackio(row: dict[str, Any], state: dict[str, Any], project: str
     return True
 
 
-def build_markdown_report(rows: list[dict[str, Any]], master: dict[str, Any], anomalies: list[str], events: list[dict[str, Any]]) -> str:
+def build_markdown_report(rows: list[dict[str, Any]], master: dict[str, Any], anomalies: list[str]) -> str:
     lines: list[str] = []
     master_hash = master.get("hash")
     master_val = master.get("val_bpb")
@@ -596,9 +498,11 @@ def build_markdown_report(rows: list[dict[str, Any]], master: dict[str, Any], an
     lines.append("## Running Experiments")
     if running_experiments:
         for row in running_experiments:
-            label = row.get("bead_id") or row["job_id"]
-            hypothesis = row.get("hypothesis") or row.get("bead_title") or "unlabeled"
-            lines.append(f"- `{label}` `{row['job_id']}` `{row['stage']}` on `{row.get('flavor')}`: {hypothesis}")
+            label = row.get("experiment_id") or row["job_id"]
+            hypothesis = row.get("hypothesis") or "unlabeled"
+            campaign = row.get("campaign")
+            campaign_text = f" ({campaign})" if isinstance(campaign, str) and campaign else ""
+            lines.append(f"- `{label}` `{row['job_id']}` `{row['stage']}` on `{row.get('flavor')}`: {hypothesis}{campaign_text}")
     else:
         lines.append("- none")
 
@@ -606,7 +510,7 @@ def build_markdown_report(rows: list[dict[str, Any]], master: dict[str, Any], an
     lines.append("## Running Non-Experiment Jobs")
     if running_other:
         for row in running_other:
-            label = row.get("bead_id") or row["job_id"]
+            label = row.get("experiment_id") or row["job_id"]
             mode = row_mode(row) or "unknown"
             lines.append(f"- `{label}` `{row['job_id']}` `{mode}` `{row['stage']}` on `{row.get('flavor')}`")
     else:
@@ -619,8 +523,8 @@ def build_markdown_report(rows: list[dict[str, Any]], master: dict[str, Any], an
             summary = row["summary"]
             delta = row.get("delta_vs_master")
             delta_text = f" ({delta:+.6f} vs master)" if isinstance(delta, float) else ""
-            label = row.get("bead_id") or row["job_id"]
-            hypothesis = row.get("hypothesis") or row.get("bead_title") or "unlabeled"
+            label = row.get("experiment_id") or row["job_id"]
+            hypothesis = row.get("hypothesis") or "unlabeled"
             lines.append(f"- `{label}` `{summary['val_bpb']:.6f}`{delta_text}: {hypothesis}")
     else:
         lines.append("- none")
@@ -634,30 +538,12 @@ def build_markdown_report(rows: list[dict[str, Any]], master: dict[str, Any], an
         lines.append("- none")
 
     lines.append("")
-    lines.append("## Worker Events")
-    if events:
-        for event in events[-10:]:
-            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-            event_type = event.get("type")
-            target = payload.get("target") or event.get("actor")
-            if event_type == "nudge":
-                detail = payload.get("reason") or "startup prompt nudge"
-            elif event_type == "escalation_sent":
-                detail = payload.get("reason") or "worker escalation"
-            elif event_type == "session_death":
-                detail = payload.get("reason") or "session death"
-            else:
-                detail = ""
-            lines.append(f"- `{target}` `{event_type}`: {detail}")
-    else:
-        lines.append("- none")
-
-    lines.append("")
     lines.append("## Failed")
     if failed:
         for row in failed[:10]:
-            label = row.get("bead_id") or row["job_id"]
-            lines.append(f"- `{label}` `{row['job_id']}` ended in `{row['stage']}`")
+            label = row.get("experiment_id") or row["job_id"]
+            hypothesis = row.get("hypothesis") or "unlabeled"
+            lines.append(f"- `{label}` `{row['job_id']}` ended in `{row['stage']}`: {hypothesis}")
     else:
         lines.append("- none")
 
@@ -668,13 +554,12 @@ def sync_project_report(
     rows: list[dict[str, Any]],
     master: dict[str, Any],
     anomalies: list[str],
-    events: list[dict[str, Any]],
     state: dict[str, Any],
     project: str,
 ) -> bool:
     import trackio
 
-    report = build_markdown_report(rows, master, anomalies, events)
+    report = build_markdown_report(rows, master, anomalies)
     report_hash = hashlib.sha1(report.encode("utf-8")).hexdigest()
     reporter_state = state.setdefault("reporter", {"step": 0})
     if report_hash == reporter_state.get("report_hash"):
@@ -693,7 +578,7 @@ def sync_project_report(
         project=project,
         name="reporter",
         group="meta",
-        config={"rig_root": str(RIG_ROOT), "source": "hf_jobs"},
+        config={"workspace": str(ROOT), "source": "hf_jobs"},
         resume="allow",
         embed=False,
         auto_log_gpu=False,
@@ -705,7 +590,6 @@ def sync_project_report(
         "completed_jobs": sum(1 for row in rows if row["stage"] == "COMPLETED"),
         "failed_jobs": sum(1 for row in rows if row["stage"] in TERMINAL_STAGES and row["stage"] != "COMPLETED"),
         "anomaly_count": len(anomalies),
-        "worker_event_count": len(events),
         "report": trackio.Markdown(report),
     }
     if best_val is not None:
@@ -730,7 +614,7 @@ def sync_project_report(
     GLOBAL_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     MARKDOWN_PATH.write_text(report, encoding="utf-8")
     SNAPSHOT_PATH.write_text(
-        json.dumps({"master": master, "rows": rows, "anomalies": anomalies, "events": events}, indent=2, sort_keys=True) + "\n",
+        json.dumps({"master": master, "rows": rows, "anomalies": anomalies}, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return True
@@ -761,8 +645,8 @@ def print_summary(rows: list[dict[str, Any]], master: dict[str, Any], anomalies:
     active_other = [row for row in active if row_mode(row) != "experiment"]
     print(f"active_jobs: {len(active)} (experiments={len(active_experiments)}, other={len(active_other)})")
     for row in active[:10]:
-        label = row.get("bead_id") or row["job_id"]
-        hypothesis = row.get("hypothesis") or row.get("bead_title") or "unlabeled"
+        label = row.get("experiment_id") or row["job_id"]
+        hypothesis = row.get("hypothesis") or row.get("campaign") or "unlabeled"
         mode = row_mode(row) or "unknown"
         print(f"  {label} {mode} {row['stage']} {row['job_id']} {hypothesis}")
     if anomalies:
@@ -774,18 +658,16 @@ def print_summary(rows: list[dict[str, Any]], master: dict[str, Any], anomalies:
 def sync_once(args: argparse.Namespace) -> list[dict[str, Any]]:
     state = load_state()
     registry = load_registry_entries()
-    bead_cache: dict[str, dict[str, Any]] = {}
     master = load_master_snapshot()
     jobs = fetch_jobs(max_jobs=args.max_jobs, namespace=args.namespace, registry=registry)
-    rows = [build_job_row(job, registry, bead_cache, master, tail=args.tail, namespace=args.namespace) for job in jobs]
-    events = load_recent_events()
-    anomalies = build_anomalies(rows, events)
+    rows = [build_job_row(job, registry, master, tail=args.tail, namespace=args.namespace) for job in jobs]
+    anomalies = build_anomalies(rows)
 
     touched = 0
     for row in rows:
         if sync_job_to_trackio(row, state, project=args.project):
             touched += 1
-    if sync_project_report(rows, master, anomalies, events, state, project=args.project):
+    if sync_project_report(rows, master, anomalies, state, project=args.project):
         touched += 1
     save_state(state)
 
@@ -809,13 +691,11 @@ def sync_loop(args: argparse.Namespace) -> int:
 
 def summary_command(args: argparse.Namespace) -> int:
     registry = load_registry_entries()
-    bead_cache: dict[str, dict[str, Any]] = {}
     master = load_master_snapshot()
     jobs = fetch_jobs(max_jobs=args.max_jobs, namespace=args.namespace, registry=registry)
-    rows = [build_job_row(job, registry, bead_cache, master, tail=args.tail, namespace=args.namespace) for job in jobs]
-    events = load_recent_events()
-    anomalies = build_anomalies(rows, events)
-    print(build_markdown_report(rows, master, anomalies, events), end="")
+    rows = [build_job_row(job, registry, master, tail=args.tail, namespace=args.namespace) for job in jobs]
+    anomalies = build_anomalies(rows)
+    print(build_markdown_report(rows, master, anomalies), end="")
     return 0
 
 

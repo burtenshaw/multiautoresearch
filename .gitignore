@@ -8,16 +8,13 @@ __pycache__/
 .venv/
 venv/
 *.log
-.claude/settings.local.json
-.claude/worktrees/
 
 research/live/*
 !research/live/.gitkeep
+!research/live/master.json
+!research/live/master_detail.json
+!research/live/dag.json
 
-# Gas Town (added by gt)
+# Local runtime state
 .runtime/
-.claude/
-.logs/
 state.json
-.beads/
-.codex/

@@ -4,25 +4,25 @@ Use this file to turn literature scans into Autolab-ready hypotheses.
 
 Rules:
 
-- Start from current hub master and refreshed DAG state.
+- Start from the current local promoted master and refreshed DAG state.
 - Propose only ideas that fit a single disciplined change in `train.py`.
 - Reject ideas that are already present in the current code or already tested in
   `research/notes.md`.
-- Promote only one hypothesis per bead.
+- Promote only one hypothesis per experiment.
 
 ## 2026-03-27 shortlist for `au-cyy`
 
 Context:
 
-- target hub master for the next direct-master runs is
-  `765a36b0700b3a20d552f48b8ca2b75636aa3e69` (`val_bpb = 0.962777`)
+- target local promoted master for the next direct-master runs is
+  `935fdbf9f4ae8a5ef5bcb76552acea2bc5801965` (`val_bpb = 0.962777`)
 - explicitly exclude the already-low-confidence lines from recent history:
   attention temperature scaling, `SLSL`, GQA half-KV, and `has_ve()` every
   second layer
 - also exclude direct repeats that already have fresh swarm evidence:
   power-law cooldown exponent `2.0` regressed on `au-fpz`, and constant Muon
   `beta2 = 0.9` already has an archived win plus a live direct-master confirm
-  bead (`au-08h`)
+  experiment (`au-08h`)
 
 ### 1. WSD-style short cooldown length
 
@@ -37,8 +37,8 @@ Context:
   - change only `WARMDOWN_RATIO`
   - leave `get_lr_multiplier()` and `FINAL_LR_FRAC` unchanged so attribution
     stays clean
-- Recommended bead title:
-  - `schedule: shorten warmdown to a 20% tail on 765a36b`
+- Recommended experiment title:
+  - `schedule: shorten warmdown to a 20% tail on 935fdbf`
 
 ### 2. 1-sqrt cooldown shape
 
@@ -51,9 +51,9 @@ Context:
     extra exponent hyperparameter
 - Exact `train.py` edit surface:
   - change only the cooldown branch inside `get_lr_multiplier()`
-  - keep `WARMDOWN_RATIO` and `FINAL_LR_FRAC` fixed for the first bead
-- Recommended bead title:
-  - `schedule: replace linear warmdown with 1-sqrt cooldown on 765a36b`
+  - keep `WARMDOWN_RATIO` and `FINAL_LR_FRAC` fixed for the first experiment
+- Recommended experiment title:
+  - `schedule: replace linear warmdown with 1-sqrt cooldown on 935fdbf`
 
 ### 3. Cooldown-only Muon `beta2` ramp
 
@@ -62,7 +62,7 @@ Context:
   - `2508.01483` reports consistent gains from higher `beta2` during cooldown
   - `2601.14603` motivates variance-adaptive Muon extensions rather than
     treating `beta2` as a fixed always-on toggle
-  - this avoids spending another bead on the already-known constant
+  - this avoids spending another experiment on the already-known constant
     `beta2 = 0.9` rerun and instead isolates whether the gain is specifically a
     late-phase variance-control effect
 - Exact `train.py` edit surface:
@@ -71,8 +71,8 @@ Context:
   - in the training-loop param-group update, set `group["beta2"]` only for
     Muon groups while leaving matrix LR, momentum, and weight decay schedules
     unchanged
-- Recommended bead title:
-  - `optimizer: ramp Muon beta2 during cooldown on 765a36b`
+- Recommended experiment title:
+  - `optimizer: ramp Muon beta2 during cooldown on 935fdbf`
 
 ## Current Paper-Derived Candidates
 
@@ -91,7 +91,7 @@ Context:
     `1.0`
 - Keep it single-change:
   - do not combine query-temperature and value-temperature in the same run
-  - do not change the window pattern in the same bead
+  - do not change the window pattern in the same experiment
 - Main risk:
   - over-sharpening attention may hurt sliding-window layers
 
@@ -133,11 +133,11 @@ Context:
   - replace only the linear cooldown interpolation with a cosine interpolation
     while keeping the same floor and cooldown duration
 - Keep it single-change:
-  - do not combine a zero floor with a new cooldown shape in the same bead
+  - do not combine a zero floor with a new cooldown shape in the same experiment
   - do not move both `WARMDOWN_RATIO` and `FINAL_LR_FRAC` together
 - Main risk:
   - scheduler-only gains can be easy to overfit with multiple adjacent sweeps, so
-    stagger these across separate beads instead of treating them as a bundle
+    stagger these across separate experiments instead of treating them as a bundle
 
 ### Gradient-preserving activation scaling
 

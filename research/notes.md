@@ -86,3 +86,94 @@ Managed H200 result:
 Conclusion:
 - This beats the current hub master (`0.962777`) by `0.001602`.
 - Submitted as patch `14810`.
+
+## Experiment: scalar-lr-08
+
+Hypothesis:
+- Increase SCALAR_LR from 0.7 to 0.8 to test whether faster learning of per-layer residual and initial scaling parameters improves validation bpb.
+
+Change:
+- `SCALAR_LR = 0.8` (was 0.7)
+
+Managed H200 result:
+- Master hash: `765a36b0700b3a20d552f48b8ca2b75636aa3e69`
+- HF Job: `69cbe00334fa24114ddf47a6`
+- Campaign: `optimizer-tuning`
+- val_bpb: `0.963049`
+- training_seconds: `300.1`
+- total_seconds: `433.0`
+- peak_vram_mb: `33609.6`
+- mfu_percent: `44.82`
+- total_tokens_M: `311.3`
+- num_steps: `2375`
+
+Conclusion:
+- FAILED. Increasing SCALAR_LR degraded validation bpb by +0.000272 compared to master (0.962777).
+- The faster learning rate for scalar parameters hurt generalization.
+
+## Experiment: embedding-wd-001
+
+Hypothesis:
+- Increase embedding weight decay from 0.0005 to 0.001 to test whether stronger regularization on token embeddings improves validation bpb.
+
+Change:
+- Embedding optimizer group `weight_decay = 0.001` (was 0.0005)
+
+Managed H200 result:
+- Master hash: `765a36b0700b3a20d552f48b8ca2b75636aa3e69`
+- HF Job: `69cbdff7942f980bf425a3d0`
+- Campaign: `regularization-tuning`
+- Status: `CANCELLED` (STUCK)
+- Job got stuck at step 02348 (97.6%) during final evaluation phase for 10+ minutes.
+
+Conclusion:
+- CANCELLED due to job hanging during evaluation. No val_bpb result obtained.
+- The hypothesis remains untested; may need to retry with different infrastructure or debugging.
+
+## Experiment: unembedding-lr-015
+
+Hypothesis:
+- Increase UNEMBEDDING_LR from 0.01 to 0.015 to test whether a higher learning rate for the output layer improves validation bpb.
+
+Change:
+- `UNEMBEDDING_LR = 0.015` (was 0.01)
+
+Managed H200 result:
+- Master hash: `935fdbf9f4ae8a5ef5bcb76552acea2bc5801965`
+- HF Job: `69cc18d8942f980bf425a641`
+- Campaign: `optimizer-tuning`
+- val_bpb: `0.970805`
+- training_seconds: `300.1`
+- total_seconds: `431.5`
+- peak_vram_mb: `33609.6`
+- mfu_percent: `44.14`
+- total_tokens_M: `306.6`
+- num_steps: `2339`
+
+Conclusion:
+- FAILED. Increasing UNEMBEDDING_LR degraded validation bpb by +0.008028 compared to master (0.962777).
+- Higher learning rate for the output layer significantly hurt generalization.
+
+## Experiment: warmdown-075
+
+Hypothesis:
+- Decrease WARMDOWN_RATIO from 0.825 to 0.75 to allow more time at higher learning rates before the final LR floor.
+
+Change:
+- `WARMDOWN_RATIO = 0.75` (was 0.825)
+
+Managed H200 result:
+- Master hash: `935fdbf9f4ae8a5ef5bcb76552acea2bc5801965`
+- HF Job: `69cc194534fa24114ddf48bd`
+- Campaign: `schedule-tuning`
+- val_bpb: `0.962980`
+- training_seconds: `300.1`
+- total_seconds: `431.5`
+- peak_vram_mb: `33609.6`
+- mfu_percent: `43.88`
+- total_tokens_M: `304.7`
+- num_steps: `2325`
+
+Conclusion:
+- FAILED. Decreasing WARMDOWN_RATIO degraded validation bpb by +0.000203 compared to master (0.962777).
+- Shorter warmdown phase slightly hurt final convergence.
